@@ -47,7 +47,6 @@ const ROOT_DIR = path.dirname(__filename);
 const configPath = path.resolve(ROOT_DIR, 'firebase-applet-config.json');
 const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-const BOOTSTRAPPED_OWNER_EMAIL = 'alysson.mgs@gmail.com';
 const parsedPort = Number.parseInt(process.env.PORT || '3000', 10);
 const PORT = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : 3000;
 
@@ -204,16 +203,27 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedAdminUser
   }
 }
 
-async function checkIsAuthorizedAdmin(user: VerifiedAdminUser): Promise<boolean> {
-  if (!user.emailVerified) return false;
-  if (user.email === BOOTSTRAPPED_OWNER_EMAIL) return true;
+async function checkIsAuthorizedAdmin(
+  user: VerifiedAdminUser
+): Promise<{ authorized: boolean; role: 'owner' | 'admin' | null }> {
+  if (!user.emailVerified) return { authorized: false, role: null };
 
   if (adminDb) {
     const byUid = await adminDb.collection('admins').doc(user.uid).get();
-    if (byUid.exists && byUid.data()?.active === true) return true;
+    if (byUid.exists && byUid.data()?.active === true) {
+      return {
+        authorized: true,
+        role: byUid.data()?.role === 'owner' ? 'owner' : 'admin',
+      };
+    }
     const byEmail = await adminDb.collection('admins').doc(user.email).get();
-    if (byEmail.exists && byEmail.data()?.active === true) return true;
-    return false;
+    if (byEmail.exists && byEmail.data()?.active === true) {
+      return {
+        authorized: true,
+        role: byEmail.data()?.role === 'owner' ? 'owner' : 'admin',
+      };
+    }
+    return { authorized: false, role: null };
   }
 
   // Check via Firestore REST API using the verified user's own Bearer token
@@ -223,17 +233,26 @@ async function checkIsAuthorizedAdmin(user: VerifiedAdminUser): Promise<boolean>
       headers: { Authorization: `Bearer ${user.idToken}` },
     });
     if (resp.ok) {
-      const docJson = (await resp.json()) as { fields?: { active?: { booleanValue?: boolean } } };
+      const docJson = (await resp.json()) as {
+        fields?: {
+          active?: { booleanValue?: boolean };
+          role?: { stringValue?: string };
+        };
+      };
       if (docJson.fields?.active?.booleanValue === true) {
-        return true;
+        return {
+          authorized: true,
+          role: docJson.fields?.role?.stringValue === 'owner' ? 'owner' : 'admin',
+        };
       }
     }
   }
-  return false;
+  return { authorized: false, role: null };
 }
 
 interface AuthedRequest extends Request {
   adminUser?: VerifiedAdminUser;
+  adminRole?: 'owner' | 'admin';
 }
 
 async function requireAdminMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -250,13 +269,14 @@ async function requireAdminMiddleware(req: AuthedRequest, res: Response, next: N
     return;
   }
 
-  const isAuthorized = await checkIsAuthorizedAdmin(verified);
-  if (!isAuthorized) {
+  const adminStatus = await checkIsAuthorizedAdmin(verified);
+  if (!adminStatus.authorized) {
     res.status(403).json({ error: 'Acesso restrito a administradores autorizados.' });
     return;
   }
 
   req.adminUser = verified;
+  req.adminRole = adminStatus.role ?? 'admin';
   next();
 }
 
@@ -1077,7 +1097,7 @@ async function startServer() {
       authorized: true,
       uid: req.adminUser!.uid,
       email: req.adminUser!.email,
-      role: req.adminUser!.email === BOOTSTRAPPED_OWNER_EMAIL ? 'owner' : 'admin',
+      role: req.adminRole || 'admin',
       adminSdkActive: Boolean(adminDb),
     });
   });

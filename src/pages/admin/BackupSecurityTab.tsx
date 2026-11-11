@@ -289,40 +289,49 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
           </form>
 
           <div className="divide-y divide-white/10 pt-2">
-            <div className="py-2.5 flex items-center justify-between text-xs">
-              <div>
-                <p className="text-white font-medium">alysson.mgs@gmail.com</p>
-                <p className="text-[#A3A3A3]">Proprietário principal (protegido)</p>
-              </div>
-              <span className="text-[#C9A15B] font-medium">Ativo</span>
-            </div>
-            {admins.map((adm) => (
-              <div key={adm.id} className="py-2.5 flex items-center justify-between text-xs">
-                <div>
-                  <p className="text-white font-medium">{adm.email}</p>
-                  <p className="text-[#A3A3A3]">{adm.name || adm.role}</p>
-                </div>
-                {adm.email !== 'alysson.mgs@gmail.com' && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setFeedback(null);
-                      try {
-                        await removeAuthorizedAdmin(adm.id);
-                        setFeedback('Administrador removido da lista autorizada.');
-                      } catch (err) {
-                        setFeedback(
-                          err instanceof Error ? err.message : 'Erro ao remover administrador.'
-                        );
-                      }
-                    }}
-                    className="text-red-300 hover:underline"
-                  >
-                    Remover
-                  </button>
-                )}
-              </div>
-            ))}
+            {admins.length === 0 ? (
+              <p className="py-3 text-xs text-[#A3A3A3]">
+                Nenhum administrador cadastrado na coleção <span className="font-mono text-white">admins</span>.
+              </p>
+            ) : (
+              admins.map((adm) => {
+                const isCurrentUser =
+                  adm.id === user?.uid ||
+                  adm.email.toLowerCase() === (user?.email || '').toLowerCase();
+                return (
+                  <div key={adm.id} className="py-2.5 flex items-center justify-between text-xs">
+                    <div>
+                      <p className="text-white font-medium">{adm.email}</p>
+                      <p className="text-[#A3A3A3]">
+                        {adm.name || (adm.role === 'owner' ? 'Proprietário' : 'Administrador')}
+                        {adm.active ? '' : ' · Inativo'}
+                      </p>
+                    </div>
+                    {isCurrentUser ? (
+                      <span className="text-[#C9A15B] font-medium">Sessão atual</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setFeedback(null);
+                          try {
+                            await removeAuthorizedAdmin(adm.id);
+                            setFeedback('Administrador removido da lista autorizada.');
+                          } catch (err) {
+                            setFeedback(
+                              err instanceof Error ? err.message : 'Erro ao remover administrador.'
+                            );
+                          }
+                        }}
+                        className="text-red-300 hover:underline"
+                      >
+                        Remover
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>

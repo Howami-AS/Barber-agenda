@@ -34,7 +34,7 @@ import {
   normalizePhone,
   timeStrToMinutes,
 } from '../utils/timezone';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 
 function makeId(prefix: string): string {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -841,8 +841,10 @@ export async function addAuthorizedAdmin(email: string, name: string): Promise<v
 }
 
 export async function removeAuthorizedAdmin(id: string): Promise<void> {
-  if (id === 'alysson.mgs@gmail.com') {
-    throw new Error('O administrador proprietário principal não pode ser removido.');
+  const currentUid = auth.currentUser?.uid;
+  const currentEmail = auth.currentUser?.email?.toLowerCase();
+  if (id === currentUid || (currentEmail && id === currentEmail)) {
+    throw new Error('Você não pode remover a própria conta conectada.');
   }
   try {
     await deleteDoc(doc(db, 'admins', id));
