@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'barber-agenda-shell-v2';
+const CACHE_VERSION = 'barber-agenda-shell-v3';
 const APP_SHELL_URLS = [
   '/',
   '/index.html',
@@ -11,10 +11,7 @@ const APP_SHELL_URLS = [
 ];
 
 const BYPASS_HOSTS = [
-  'firestore.googleapis.com',
-  'identitytoolkit.googleapis.com',
-  'securetoken.googleapis.com',
-  'www.googleapis.com',
+  'supabase.co',
 ];
 
 self.addEventListener('install', (event) => {
@@ -46,7 +43,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Never intercept API endpoints, Vite dev modules, or Firebase Auth/Firestore requests
+  // Never intercept API endpoints, Vite dev modules, or Supabase Auth/Database requests
   if (
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/@vite') ||

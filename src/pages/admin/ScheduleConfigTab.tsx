@@ -5,7 +5,7 @@ import {
   saveBlockedPeriod,
   saveBusinessHoursDay,
   saveSettings,
-} from '../../services/firestoreAdmin';
+} from '../../services/supabaseAdmin';
 import type {
   BarbershopSettings,
   BlockedPeriod,

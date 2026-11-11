@@ -4,17 +4,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { initializeApp as initializeClientApp, getApps as getClientApps } from 'firebase/app';
+import { createClient } from '@supabase/supabase-js';
 import {
   Bytes,
   collection,
   doc,
+  FieldValue,
   getDoc,
   getDocs,
-  getFirestore as getClientFirestore,
   runTransaction,
   serverTimestamp,
-} from 'firebase/firestore';
+  createSupabaseRecordStore,
+  type SupabaseRecordStore,
+} from './src/services/supabaseRecords.ts';
 import type {
   Appointment,
   BarbershopSettings,
@@ -34,56 +36,26 @@ import {
   normalizePhone,
 } from './src/utils/timezone.ts';
 
-interface FirebaseAppletConfig {
-  projectId: string;
-  appId: string;
-  apiKey: string;
-  authDomain: string;
-  firestoreDatabaseId: string;
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.dirname(__filename);
-const configPath = path.resolve(ROOT_DIR, 'firebase-applet-config.json');
-const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
 const parsedPort = Number.parseInt(process.env.PORT || '3000', 10);
 const PORT = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : 3000;
 
-// Initialize Firebase Web Client SDK for public transactional endpoints & availability queries
-const clientApp =
-  getClientApps().length > 0 ? getClientApps()[0] : initializeClientApp(firebaseConfig);
-const firestoreDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
-
-// Optional Firebase Admin SDK when service account credentials are provided
-let adminAuth: import('firebase-admin/auth').Auth | null = null;
-let adminDb: import('firebase-admin/firestore').Firestore | null = null;
-
-async function initOptionalAdminSdk() {
-  const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
-  if (!saJson) return;
-  try {
-    const adminAppMod = await import('firebase-admin/app');
-    const adminAuthMod = await import('firebase-admin/auth');
-    const adminFsMod = await import('firebase-admin/firestore');
-    const parsed = JSON.parse(saJson) as { private_key?: string; [key: string]: unknown };
-    if (typeof parsed.private_key === 'string') {
-      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-    }
-    const app =
-      adminAppMod.getApps().length > 0
-        ? adminAppMod.getApps()[0]
-        : adminAppMod.initializeApp({
-            credential: adminAppMod.cert(parsed as import('firebase-admin/app').ServiceAccount),
-            projectId: firebaseConfig.projectId,
-          });
-    adminAuth = adminAuthMod.getAuth(app);
-    adminDb = adminFsMod.getFirestore(app, firebaseConfig.firestoreDatabaseId);
-    console.log('[Barber Agenda] Firebase Admin SDK initialized.');
-  } catch (err) {
-    console.warn('[Barber Agenda] Optional Admin SDK init skipped:', (err as Error).message);
-  }
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!supabaseUrl || !supabaseServiceRoleKey) {
+  throw new Error(
+    'Configure VITE_SUPABASE_URL (ou SUPABASE_URL) e SUPABASE_SERVICE_ROLE_KEY no servidor.'
+  );
 }
+const supabaseProject = new URL(supabaseUrl).hostname;
+
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
+const adminDb: SupabaseRecordStore = createSupabaseRecordStore(supabaseAdmin);
+const supabaseDb = adminDb;
 
 // ---------------------------------------------------------------------------
 // Anti-Spam & Rate Limiting
@@ -152,53 +124,15 @@ interface VerifiedAdminUser {
   idToken: string;
 }
 
-async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedAdminUser | null> {
+async function verifySupabaseAccessToken(idToken: string): Promise<VerifiedAdminUser | null> {
   if (!idToken || idToken.length < 20) return null;
-
-  if (adminAuth) {
-    try {
-      const decoded = await adminAuth.verifyIdToken(idToken);
-      if (!decoded.email || !decoded.email_verified) return null;
-      return {
-        uid: decoded.uid,
-        email: decoded.email.toLowerCase(),
-        emailVerified: true,
-        idToken,
-      };
-    } catch (err) {
-      console.warn('[Barber Agenda] Admin SDK verifyIdToken failed:', (err as Error).message);
-      return null;
-    }
-  }
-
-  // Official Firebase Identity Toolkit verification using project API key
   try {
-    const resp = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      }
-    );
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      console.warn('[Barber Agenda] Identity Toolkit accounts:lookup failed:', resp.status, errText);
-      return null;
-    }
-    const data = (await resp.json()) as {
-      users?: Array<{ localId?: string; email?: string; emailVerified?: boolean }>;
-    };
-    const user = data.users?.[0];
-    if (!user?.localId || !user?.email || !user.emailVerified) return null;
-    return {
-      uid: user.localId,
-      email: user.email.toLowerCase(),
-      emailVerified: true,
-      idToken,
-    };
+    const { data, error } = await supabaseAdmin.auth.getUser(idToken);
+    const user = data.user;
+    if (error || !user?.email || !user.email_confirmed_at) return null;
+    return { uid: user.id, email: user.email.toLowerCase(), emailVerified: true, idToken };
   } catch (err) {
-    console.warn('[Barber Agenda] Identity Toolkit request error:', (err as Error).message);
+    console.warn('[Barber Agenda] Supabase access token verification failed:', (err as Error).message);
     return null;
   }
 }
@@ -207,45 +141,21 @@ async function checkIsAuthorizedAdmin(
   user: VerifiedAdminUser
 ): Promise<{ authorized: boolean; role: 'owner' | 'admin' | null }> {
   if (!user.emailVerified) return { authorized: false, role: null };
-
-  if (adminDb) {
-    const byUid = await adminDb.collection('admins').doc(user.uid).get();
-    if (byUid.exists && byUid.data()?.active === true) {
-      return {
-        authorized: true,
-        role: byUid.data()?.role === 'owner' ? 'owner' : 'admin',
-      };
-    }
-    const byEmail = await adminDb.collection('admins').doc(user.email).get();
-    if (byEmail.exists && byEmail.data()?.active === true) {
-      return {
-        authorized: true,
-        role: byEmail.data()?.role === 'owner' ? 'owner' : 'admin',
-      };
-    }
-    return { authorized: false, role: null };
-  }
-
-  // Check via Firestore REST API using the verified user's own Bearer token
-  const baseUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/admins`;
-  for (const docKey of [user.uid, user.email]) {
-    const resp = await fetch(`${baseUrl}/${encodeURIComponent(docKey)}`, {
-      headers: { Authorization: `Bearer ${user.idToken}` },
-    });
-    if (resp.ok) {
-      const docJson = (await resp.json()) as {
-        fields?: {
-          active?: { booleanValue?: boolean };
-          role?: { stringValue?: string };
-        };
-      };
-      if (docJson.fields?.active?.booleanValue === true) {
-        return {
-          authorized: true,
-          role: docJson.fields?.role?.stringValue === 'owner' ? 'owner' : 'admin',
-        };
-      }
-    }
+  const snapshot = await adminDb.collection('admins').get();
+  const admin = snapshot.docs.find((entry) => {
+    const data = entry.data() as Record<string, unknown> | undefined;
+    return (
+      entry.id === user.uid ||
+      entry.id.toLowerCase() === user.email ||
+      String(data?.email || '').toLowerCase() === user.email
+    );
+  });
+  const adminData = admin?.data() as Record<string, unknown> | undefined;
+  if (adminData?.active === true) {
+    return {
+      authorized: true,
+      role: adminData.role === 'owner' ? 'owner' : 'admin',
+    };
   }
   return { authorized: false, role: null };
 }
@@ -263,7 +173,7 @@ async function requireAdminMiddleware(req: AuthedRequest, res: Response, next: N
     return;
   }
 
-  const verified = await verifyFirebaseIdToken(match[1]);
+  const verified = await verifySupabaseAccessToken(match[1]);
   if (!verified) {
     res.status(401).json({ error: 'Sessão inválida ou e-mail não verificado.' });
     return;
@@ -281,7 +191,7 @@ async function requireAdminMiddleware(req: AuthedRequest, res: Response, next: N
 }
 
 // ---------------------------------------------------------------------------
-// Firestore Public Readers (Server-Side, Fail-Closed on Real DB Errors)
+// Supabase Public Readers (Server-Side, Fail-Closed on Real DB Errors)
 // ---------------------------------------------------------------------------
 function docExists(snap: { exists: boolean | (() => boolean) }): boolean {
   return typeof snap.exists === 'function' ? snap.exists() : Boolean(snap.exists);
@@ -290,9 +200,9 @@ function docExists(snap: { exists: boolean | (() => boolean) }): boolean {
 async function loadPublicSettings(): Promise<BarbershopSettings | null> {
   if (adminDb) {
     const snap = await adminDb.collection('settings').doc('barbershop').get();
-    return snap.exists ? (snap.data() as BarbershopSettings) : null;
+    return snap.exists() ? (snap.data() as BarbershopSettings) : null;
   }
-  const snap = await getDoc(doc(firestoreDb, 'settings', 'barbershop'));
+  const snap = await getDoc(doc(supabaseDb, 'settings', 'barbershop'));
   return snap.exists() ? (snap.data() as BarbershopSettings) : null;
 }
 
@@ -304,7 +214,7 @@ async function loadPublicServices(): Promise<ServiceItem[]> {
       items.push({ id: d.id, ...(d.data() as Omit<ServiceItem, 'id'>) });
     });
   } else {
-    const snap = await getDocs(collection(firestoreDb, 'services'));
+    const snap = await getDocs(collection(supabaseDb, 'services'));
     snap.forEach((d) => {
       items.push({ id: d.id, ...(d.data() as Omit<ServiceItem, 'id'>) });
     });
@@ -323,7 +233,7 @@ async function loadBusinessHoursMap(): Promise<Map<number, BusinessHoursDay>> {
       }
     });
   } else {
-    const snap = await getDocs(collection(firestoreDb, 'businessHours'));
+    const snap = await getDocs(collection(supabaseDb, 'businessHours'));
     snap.forEach((d) => {
       const data = d.data() as BusinessHoursDay;
       if (typeof data.dayOfWeek === 'number') {
@@ -342,7 +252,7 @@ async function loadBlockedPeriods(): Promise<BlockedPeriod[]> {
       list.push({ id: d.id, ...(d.data() as Omit<BlockedPeriod, 'id'>) });
     });
   } else {
-    const snap = await getDocs(collection(firestoreDb, 'blockedPeriods'));
+    const snap = await getDocs(collection(supabaseDb, 'blockedPeriods'));
     snap.forEach((d) => {
       list.push({ id: d.id, ...(d.data() as Omit<BlockedPeriod, 'id'>) });
     });
@@ -350,42 +260,7 @@ async function loadBlockedPeriods(): Promise<BlockedPeriod[]> {
   return list;
 }
 
-async function listCollectionRest(collectionName: string, idToken: string): Promise<unknown[]> {
-  const results: unknown[] = [];
-  let pageToken: string | undefined;
-
-  do {
-    const params = new URLSearchParams({ pageSize: '300' });
-    if (pageToken) params.set('pageToken', pageToken);
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${collectionName}?${params.toString()}`;
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${idToken}` },
-    });
-    if (!resp.ok) {
-      throw new Error(`Falha ao ler coleção ${collectionName} (${resp.status}).`);
-    }
-    const data = (await resp.json()) as {
-      documents?: Array<{ name: string; fields?: Record<string, unknown> }>;
-      nextPageToken?: string;
-    };
-    for (const d of data.documents || []) {
-      results.push({
-        id: d.name.split('/').pop(),
-        fields: d.fields || {},
-      });
-    }
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// App Bootstrapping
-// ---------------------------------------------------------------------------
 async function startServer() {
-  await initOptionalAdminSdk();
-
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '1mb' }));
@@ -412,7 +287,7 @@ async function startServer() {
       service: 'Barber Agenda API',
       timezone: 'America/Fortaleza',
       now: getFortalezaNow(),
-      adminSdkActive: Boolean(adminDb),
+      supabaseAdminActive: true,
     });
   });
 
@@ -436,7 +311,7 @@ async function startServer() {
       });
     } catch (err) {
       console.error('Error in /api/public/bootstrap:', err);
-      res.status(503).json({ error: 'Erro ao carregar informações reais da barbearia no Firestore.' });
+      res.status(503).json({ error: 'Erro ao carregar informações reais da barbearia no Supabase.' });
     }
   });
 
@@ -459,18 +334,18 @@ async function startServer() {
         loadPublicSettings(),
         adminDb
           ? adminDb.collection('services').doc(serviceId).get()
-          : getDoc(doc(firestoreDb, 'services', serviceId)),
+          : getDoc(doc(supabaseDb, 'services', serviceId)),
         loadBusinessHoursMap(),
         loadBlockedPeriods(),
         adminDb
           ? adminDb.collection('daySchedules').doc(date).get()
-          : getDoc(doc(firestoreDb, 'daySchedules', date)),
+          : getDoc(doc(supabaseDb, 'daySchedules', date)),
       ]);
 
       if (!settings || hoursMap.size === 0) {
         res.status(404).json({
           error:
-            'Agenda aguardando ativação inicial: faça o primeiro login na Área do Barbeiro (/admin) para gravar os serviços e horários no Cloud Firestore.',
+            'Agenda aguardando ativação inicial: faça o primeiro login na Área do Barbeiro (/admin) para gravar os serviços e horários no Supabase.',
         });
         return;
       }
@@ -507,7 +382,7 @@ async function startServer() {
       });
     } catch (err) {
       console.error('Error in /api/public/availability:', err);
-      res.status(503).json({ error: 'Erro ao consultar disponibilidade no Firestore.' });
+      res.status(503).json({ error: 'Erro ao consultar disponibilidade no Supabase.' });
     }
   });
 
@@ -607,21 +482,21 @@ async function startServer() {
                 tx.get(blocksQuery),
               ]);
 
-            if (!settingsSnap.exists || !hoursSnap.exists) {
+            if (!settingsSnap.exists() || !hoursSnap.exists()) {
               throw Object.assign(
                 new Error('Configurações ou expediente da barbearia ainda não configurados.'),
                 { statusCode: 409 }
               );
             }
 
-            if (!serviceSnap.exists) {
+            if (!serviceSnap.exists()) {
               throw Object.assign(new Error('Serviço não encontrado.'), { statusCode: 404 });
             }
 
             const settings = settingsSnap.data() as BarbershopSettings;
             const businessHoursDay = hoursSnap.data() as BusinessHoursDay;
             const service = { id: serviceSnap.id, ...(serviceSnap.data() as Omit<ServiceItem, 'id'>) };
-            const daySchedule = daySnap.exists ? (daySnap.data() as DaySchedule) : undefined;
+            const daySchedule = daySnap.exists() ? (daySnap.data() as DaySchedule) : undefined;
             const blockedPeriods: BlockedPeriod[] = blocksSnap.docs.map((d) => ({
               id: d.id,
               ...(d.data() as Omit<BlockedPeriod, 'id'>),
@@ -655,7 +530,6 @@ async function startServer() {
           bookedServicePrice = service.price;
           bookedDuration = service.durationMinutes;
 
-          const { FieldValue } = await import('firebase-admin/firestore');
           const nextBookings = {
             ...(daySchedule?.bookings || {}),
             [appointmentId]: {
@@ -693,7 +567,7 @@ async function startServer() {
             updatedAt: FieldValue.serverTimestamp(),
           });
 
-          if (customerSnap.exists) {
+          if (customerSnap.exists()) {
             const existingCust = customerSnap.data() as { totalVisits?: number; firstVisitAt?: string };
             tx.update(customerRef, {
               name: customerName,
@@ -719,12 +593,12 @@ async function startServer() {
           });
         } else {
           const blockedPeriods = await loadBlockedPeriods();
-          await runTransaction(firestoreDb, async (tx) => {
-          const settingsRef = doc(firestoreDb, 'settings', 'barbershop');
-          const hoursRef = doc(firestoreDb, 'businessHours', `day_${dayOfWeek}`);
-          const serviceRef = doc(firestoreDb, 'services', serviceId);
-          const dayRef = doc(firestoreDb, 'daySchedules', date);
-          const aptRef = doc(firestoreDb, 'appointments', appointmentId);
+          await runTransaction(supabaseDb, async (tx) => {
+          const settingsRef = doc(supabaseDb, 'settings', 'barbershop');
+          const hoursRef = doc(supabaseDb, 'businessHours', `day_${dayOfWeek}`);
+          const serviceRef = doc(supabaseDb, 'services', serviceId);
+          const dayRef = doc(supabaseDb, 'daySchedules', date);
+          const aptRef = doc(supabaseDb, 'appointments', appointmentId);
 
           const [settingsSnap, hoursSnap, serviceSnap, daySnap] = await Promise.all([
             tx.get(settingsRef),
@@ -848,7 +722,7 @@ async function startServer() {
       ) {
         res.status(503).json({
           error:
-            'As regras do Firestore exigem autenticação administrativa para escrita. Configure FIREBASE_SERVICE_ACCOUNT_JSON no servidor para habilitar reservas públicas via Admin SDK.',
+            'As regras do Supabase exigem autenticação administrativa para escrita. Configure SUPABASE_SERVICE_ROLE_KEY no servidor para habilitar reservas públicas via Admin SDK.',
         });
         return;
       }
@@ -870,7 +744,7 @@ async function startServer() {
     try {
       const daySnap = adminDb
         ? await adminDb.collection('daySchedules').doc(date).get()
-        : await getDoc(doc(firestoreDb, 'daySchedules', date));
+        : await getDoc(doc(supabaseDb, 'daySchedules', date));
       if (!docExists(daySnap)) {
         res.status(404).json({ error: 'Agendamento não encontrado.' });
         return;
@@ -934,12 +808,12 @@ async function startServer() {
               tx.get(aptRef),
             ]);
 
-            if (!settingsSnap.exists) {
+            if (!settingsSnap.exists()) {
               throw Object.assign(new Error('Configurações da barbearia não encontradas.'), {
                 statusCode: 409,
               });
             }
-            if (!daySnap.exists || !aptSnap.exists) {
+            if (!daySnap.exists() || !aptSnap.exists()) {
               throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
             }
 
@@ -990,7 +864,6 @@ async function startServer() {
               : null;
             const customerSnap = customerRef ? await tx.get(customerRef) : null;
 
-            const { FieldValue } = await import('firebase-admin/firestore');
             const nextBookings = {
               ...(dayData.bookings || {}),
               [id]: {
@@ -1002,7 +875,7 @@ async function startServer() {
             tx.update(dayRef, { bookings: nextBookings, updatedAt: FieldValue.serverTimestamp() });
             tx.update(aptRef, { status: 'cancelled', updatedAt: FieldValue.serverTimestamp() });
 
-            if (customerRef && customerSnap?.exists) {
+            if (customerRef && customerSnap?.exists()) {
               const cust = customerSnap.data() as { totalVisits?: number };
               tx.update(customerRef, {
                 totalVisits: Math.max(0, (cust.totalVisits || 0) - 1),
@@ -1017,8 +890,8 @@ async function startServer() {
               statusCode: 409,
             });
           }
-          await runTransaction(firestoreDb, async (tx) => {
-            const dayRef = doc(firestoreDb, 'daySchedules', date);
+          await runTransaction(supabaseDb, async (tx) => {
+            const dayRef = doc(supabaseDb, 'daySchedules', date);
             const daySnap = await tx.get(dayRef);
             if (!daySnap.exists()) {
               throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
@@ -1080,7 +953,7 @@ async function startServer() {
       ) {
         res.status(503).json({
           error:
-            'As regras do Firestore exigem autenticação administrativa para cancelamento via servidor. Configure FIREBASE_SERVICE_ACCOUNT_JSON no servidor.',
+            'As regras do Supabase exigem autenticação administrativa para cancelamento via servidor. Configure SUPABASE_SERVICE_ROLE_KEY no servidor.',
         });
         return;
       }
@@ -1098,7 +971,7 @@ async function startServer() {
       uid: req.adminUser!.uid,
       email: req.adminUser!.email,
       role: req.adminRole || 'admin',
-      adminSdkActive: Boolean(adminDb),
+      supabaseAdminActive: true,
     });
   });
 
@@ -1118,22 +991,18 @@ async function startServer() {
       ];
 
       const data: Record<string, unknown[]> = {};
-      if (adminDb) {
-        for (const col of collections) {
-          const snap = await adminDb.collection(col).get();
-          data[col] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        }
-      } else {
-        for (const col of collections) {
-          data[col] = await listCollectionRest(col, req.adminUser!.idToken);
-        }
+      for (const col of collections) {
+        const snap = await adminDb.collection(col).get();
+        data[col] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Record<string, unknown>),
+        }));
       }
 
       res.json({
         exportedAt: new Date().toISOString(),
         exportedBy: req.adminUser!.email,
-        projectId: firebaseConfig.projectId,
-        databaseId: firebaseConfig.firestoreDatabaseId,
+        supabaseProject,
         collections: data,
       });
     } catch (err) {

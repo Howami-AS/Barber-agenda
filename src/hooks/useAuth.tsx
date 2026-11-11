@@ -1,13 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
-import {
-  auth,
-  googleProvider,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  signOut,
-} from '../services/firebase';
+import type { User } from '@supabase/supabase-js';
+import { supabase } from '../services/supabase';
 import { verifyAdminOnServer } from '../services/api';
 
 interface AuthContextValue {
@@ -33,20 +26,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const verifyUserAdmin = async (firebaseUser: User, isStale?: () => boolean) => {
-    if (!firebaseUser.emailVerified) {
+  const verifyUserAdmin = async (user: User, isStale?: () => boolean) => {
+    if (!user.email_confirmed_at) {
       if (isStale?.()) return;
       setIsAuthorizedAdmin(false);
       setAdminRole(null);
       setAuthError(
-        'O e-mail desta conta ainda não foi verificado no Firebase Authentication. Verifique sua caixa de entrada ou utilize "Entrar com Google".'
+        'O e-mail desta conta ainda não foi confirmado no Supabase Auth. Verifique sua caixa de entrada ou utilize "Entrar com Google".'
       );
       setLoading(false);
       return;
     }
 
     try {
-      const result = await verifyAdminOnServer(firebaseUser);
+      const result = await verifyAdminOnServer(user);
       if (isStale?.()) return;
       setIsAuthorizedAdmin(Boolean(result.authorized));
       setAdminRole(result.role);
@@ -71,12 +64,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     let checkSeq = 0;
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const mySeq = ++checkSeq;
       const isStale = () => mySeq !== checkSeq;
+      const currentUser = session?.user ?? null;
 
-      setUser(firebaseUser);
-      if (!firebaseUser) {
+      setUser(currentUser);
+      if (!currentUser) {
         setIsAuthorizedAdmin(false);
         setAdminRole(null);
         setLoading(false);
@@ -85,26 +79,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setLoading(true);
       setAuthError(null);
-      await verifyUserAdmin(firebaseUser, isStale);
+      void verifyUserAdmin(currentUser, isStale);
     });
 
     return () => {
       checkSeq += 1;
-      unsub();
+      subscription.unsubscribe();
     };
   }, []);
 
   const retryAdminCheck = async () => {
-    if (!auth.currentUser) return;
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (!currentUser) return;
     setLoading(true);
     setAuthError(null);
-    await verifyUserAdmin(auth.currentUser);
+    await verifyUserAdmin(currentUser);
   };
 
   const loginWithGoogle = async () => {
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/admin` },
+      });
+      if (error) throw error;
     } catch (err) {
       const msg = (err as Error).message || 'Falha ao entrar com Google.';
       setAuthError(msg);
@@ -115,30 +114,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithEmail = async (email: string, password: string) => {
     setAuthError(null);
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error) throw error;
     } catch (err) {
-      const code = (err as { code?: string }).code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'O login por E-mail/Senha ainda não foi ativado no Console do Firebase. Utilize "Entrar com Google" ou ative o provedor Email/Password no Firebase Authentication.'
-        );
-      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
-        setAuthError('E-mail ou senha inválidos.');
-      } else {
-        setAuthError((err as Error).message || 'Erro ao autenticar.');
-      }
+      setAuthError((err as Error).message || 'Erro ao autenticar.');
       throw err;
     }
   };
 
   const resetPassword = async (email: string) => {
     setAuthError(null);
-    await sendPasswordResetEmail(auth, email.trim());
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/admin`,
+    });
+    if (error) throw error;
   };
 
   const logout = async () => {
     setAuthError(null);
-    await signOut(auth);
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
   };
 
   return (

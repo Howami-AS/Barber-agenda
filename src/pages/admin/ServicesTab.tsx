@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Edit3, Eye, EyeOff, Plus, Trash2, X } from 'lucide-react';
-import { removeService, saveService } from '../../services/firestoreAdmin';
+import { removeService, saveService } from '../../services/supabaseAdmin';
 import type { ServiceItem } from '../../types/barber';
 import { formatCurrencyBRL } from '../../utils/timezone';
 

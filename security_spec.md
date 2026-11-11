@@ -1,24 +1,17 @@
-# Barber Agenda — Security Specification (Phase 0 TDD)
+# Barber Agenda — Supabase Security Specification
 
-## 1. Data Invariants
+## Data access invariants
 
-1. **Default-Deny Safety Net**: Every unspecified path under `/databases/{database}/documents` is denied by default (`allow read, write: if false`).
-2. **Admin-Only Writes (Zero Public Client Writes)**: Unauthenticated clients and authenticated non-admin users MUST NEVER create, update, or delete any document in any Firestore collection (`admins`, `settings`, `services`, `businessHours`, `blockedPeriods`, `daySchedules`, `appointments`, `customers`, `payments`, `expenses`, `backups`). All public bookings/cancellations must be executed server-side via the Firebase Admin SDK (`FIREBASE_SERVICE_ACCOUNT_JSON`) or by an authenticated administrator.
-3. **LGPD Read Restrictions (Zero Public PII Exposure)**: Collections containing personal data (names, phones, emails, notes, financial history, backups) — `appointments`, `customers`, `admins`, `payments`, `expenses`, `backups` — are strictly restricted (`get` and `list`) to verified active administrators (`isAdmin()`). Public reads are limited strictly to non-PII storefront/availability data (`settings/barbershop` via `get`, `services`, `businessHours`, `blockedPeriods`, and anonymous slot occupancy `daySchedules/{date}` via `get` only; `list` on `settings` and `daySchedules` is restricted to `isAdmin()`).
-4. **Verified Admin Gate**: Administrative privileges require `request.auth != null`, `request.auth.token.email_verified == true`, and an active (`active == true`) document in `/admins/{uid}` or `/admins/{email}`. Only an existing active `'owner'` in `/admins` can grant `'owner'` role or modify/delete an `'owner'` record, and no admin can delete their own admin entry.
-5. **Strict Schema, Types, Sizes & Timestamps**: Every document write validates `hasAll` & `hasOnly` keys, field types, regex IDs (`^[a-zA-Z0-9_\-]+$`), string/map `.size()` boundaries, valid dates/times (`endMinutes - startMinutes == durationMinutes`), native Maps/Lists in `backups.payload`, immutable `createdAt`/`source`, and server timestamps (`request.time`).
+1. `app_records` has row-level security enabled. Authenticated browser users can read records only when an active record exists in the `admins` collection for their Supabase UUID or verified email.
+2. Anonymous clients cannot read or write `app_records`. Public storefront, availability, booking, status, and cancellation flows are handled by the server.
+3. Browser writes use `apply_record_batch`; the function checks active-admin status, validates record keys, and restricts changes to the `admins` collection to owners.
+4. The server verifies Supabase access tokens with Supabase Auth before serving administrative API routes. It uses `SUPABASE_SERVICE_ROLE_KEY` only on the server.
+5. Multi-record mutations compare row revisions and use a PostgreSQL advisory transaction lock, preventing concurrent appointment writes from silently overwriting one another.
+6. Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` may be exposed to the browser. The service role key must never use a `VITE_` prefix or be committed.
 
-## 2. The "Dirty Dozen" Attack Payloads (Expected: PERMISSION_DENIED)
+## Deployment checks
 
-1. **Unauthenticated Customer PII List**: Anonymous `list` on `/customers`.
-2. **Unauthenticated Appointment Read**: Anonymous `get` on `/appointments/apt_001`.
-3. **Spoofed Email Unverified Admin**: Authenticated user matching an active `/admins/{email}` document with `email_verified: false` attempting `list` on `/payments`.
-4. **Self-Admin Escalation**: Authenticated non-admin user attempting `create` on `/admins/attacker_uid` with `{ role: "owner", active: true }`.
-5. **Unauthenticated Public Appointment Write**: Anonymous `create` on `/appointments/apt_public`.
-6. **Authenticated Non-Admin Appointment Write**: Signed-in non-admin client attempting `create` on `/appointments/apt_nonadmin`.
-7. **Unauthenticated DaySchedule Write / Hijack**: Anonymous `create` or `update` on `/daySchedules/2026-12-15`.
-8. **ID Poisoning & Resource Exhaustion**: Any write on `/appointments/{200-char-id}` or oversized fields.
-9. **Unauthenticated DaySchedules / Settings List Scraping**: Anonymous `list` on `/daySchedules` or `/settings`.
-10. **Non-Admin Service Price Tampering**: Non-admin `update` on `/services/svc_corte_masculino` setting `price: 0`.
-11. **Non-Admin Financial Ledger Forgery**: Non-admin `create` on `/payments/pay_fake` or `/expenses/exp_fake`.
-12. **Client-Forged Timestamp or JSON Backup String**: Write passing a past `createdAt` or `payloadJson` string instead of `request.time` / native map.
+- Apply the SQL migration before starting the application.
+- Enable Supabase Realtime for `public.app_records`.
+- Create and verify the first Supabase Auth user, then add an active `owner` record to `app_records` through the SQL Editor.
+- Test that anonymous requests cannot read `app_records`, an unlisted user cannot access admin APIs, and an active owner can manage records and administrator entries.

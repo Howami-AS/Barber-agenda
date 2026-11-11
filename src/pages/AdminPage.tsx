@@ -29,7 +29,7 @@ import {
   subscribeServices,
   subscribeSettings,
   syncAdminConsistency,
-} from '../services/firestoreAdmin';
+} from '../services/supabaseAdmin';
 import type {
   AdminUser,
   Appointment,

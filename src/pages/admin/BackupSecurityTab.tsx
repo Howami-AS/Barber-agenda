@@ -14,7 +14,7 @@ import {
   createRemoteBackupSnapshot,
   removeAuthorizedAdmin,
   removeRemoteBackup,
-} from '../../services/firestoreAdmin';
+} from '../../services/supabaseAdmin';
 import type {
   AdminUser,
   Appointment,
@@ -95,7 +95,7 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
         payments,
         expenses,
       });
-      setFeedback('Snapshot remoto salvo com sucesso na coleção backups do Cloud Firestore.');
+      setFeedback('Snapshot remoto salvo com sucesso no Supabase.');
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'Erro ao criar snapshot remoto.');
     } finally {
@@ -139,7 +139,7 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
           Backup, Segurança e Aplicativo
         </h2>
         <p className="text-xs sm:text-sm text-[#A3A3A3]">
-          Snapshots remotos no Firestore, exportação completa, lista de administradores e compatibilidade Android.
+          Snapshots remotos no Supabase, exportação completa, lista de administradores e compatibilidade Android.
         </p>
       </div>
 
@@ -159,7 +159,7 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
             </h3>
           </div>
           <p className="text-xs text-[#A3A3A3] leading-relaxed">
-            A exportação local (JSON) serve para arquivo pessoal, enquanto os snapshots remotos permanecem protegidos no Cloud Firestore e podem ser baixados a qualquer momento.
+            A exportação local (JSON) serve para arquivo pessoal,             enquanto os snapshots remotos permanecem protegidos no Supabase e podem ser baixados a qualquer momento.
           </p>
 
           <div className="space-y-2">
@@ -180,7 +180,7 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#C9A15B] text-[#171717] text-xs font-semibold flex items-center justify-center gap-2"
             >
               <CloudUpload className="w-4 h-4" />
-              <span>Criar snapshot no Firestore</span>
+              <span>Criar snapshot no Supabase</span>
             </button>
             <button
               type="button"
@@ -257,7 +257,7 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
             </h3>
           </div>
           <p className="text-xs text-[#A3A3A3]">
-            Somente contas listadas abaixo (com e-mail verificado) têm acesso ao painel e às coleções privadas no Firestore.
+            Somente contas listadas abaixo (com e-mail verificado) têm acesso ao painel e aos registros privados no Supabase.
           </p>
 
           <form onSubmit={handleAddAdmin} className="space-y-3">
@@ -291,12 +291,12 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
           <div className="divide-y divide-white/10 pt-2">
             {admins.length === 0 ? (
               <p className="py-3 text-xs text-[#A3A3A3]">
-                Nenhum administrador cadastrado na coleção <span className="font-mono text-white">admins</span>.
+                Nenhum administrador cadastrado no registro <span className="font-mono text-white">admins</span>.
               </p>
             ) : (
               admins.map((adm) => {
                 const isCurrentUser =
-                  adm.id === user?.uid ||
+                  adm.id === user?.id ||
                   adm.email.toLowerCase() === (user?.email || '').toLowerCase();
                 return (
                   <div key={adm.id} className="py-2.5 flex items-center justify-between text-xs">
@@ -346,10 +346,10 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
             1. Em caso de perda acidental, baixe o último snapshot remoto ou utilize o arquivo JSON exportado.
           </p>
           <p>
-            2. Para restaurar grandes volumes em produção com segurança transacional, importe o JSON utilizando o Firebase Admin SDK via script administrativo ou console do Cloud Firestore, preservando os IDs originais das coleções.
+            2. Para restaurar grandes volumes em produção com segurança transacional, importe o JSON utilizando o Supabase SQL Editor ou um script administrativo, preservando os IDs originais das coleções.
           </p>
           <p>
-            3. Backup automático programado: configure Cloud Firestore Scheduled Backups (GCP CLI / Console) no projeto <span className="font-mono text-white">long-constant-whl8x</span> para retenção diária externa.
+            3. Backup automático programado: configure a política de backups do seu projeto Supabase no Dashboard para retenção externa.
           </p>
         </div>
 

@@ -1,4 +1,4 @@
-import type { User } from 'firebase/auth';
+import type { User } from '@supabase/supabase-js';
 import type {
   AvailabilityResult,
   BarbershopSettings,
@@ -8,7 +8,7 @@ import type {
   ServiceItem,
 } from '../types/barber';
 import type { FortalezaNow } from '../utils/timezone';
-import { auth } from './firebase';
+import { supabase } from './supabase';
 
 export interface PublicBootstrapPayload {
   settings: BarbershopSettings;
@@ -18,13 +18,16 @@ export interface PublicBootstrapPayload {
   now: FortalezaNow;
 }
 
-export async function fetchPublicBootstrap(): Promise<PublicBootstrapPayload> {
-  const resp = await fetch('/api/public/bootstrap');
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Erro ao carregar dados da barbearia.');
+async function readResponse<T>(response: Response, fallback: string): Promise<T> {
+  const data = (await response.json()) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new Error(typeof data.error === 'string' ? data.error : fallback);
   }
-  return data as PublicBootstrapPayload;
+  return data as T;
+}
+
+export async function fetchPublicBootstrap(): Promise<PublicBootstrapPayload> {
+  return readResponse(await fetch('/api/public/bootstrap'), 'Erro ao carregar dados da barbearia.');
 }
 
 export async function fetchDayAvailability(
@@ -35,12 +38,10 @@ export async function fetchDayAvailability(
     throw new Error('Sem conexão com a internet. A consulta de horários exige conexão ativa.');
   }
   const params = new URLSearchParams({ date, serviceId });
-  const resp = await fetch(`/api/public/availability?${params.toString()}`);
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Não foi possível consultar a disponibilidade.');
-  }
-  return data as AvailabilityResult & { now: FortalezaNow };
+  return readResponse(
+    await fetch(`/api/public/availability?${params.toString()}`),
+    'Não foi possível consultar a disponibilidade.'
+  );
 }
 
 export async function createPublicBooking(payload: {
@@ -54,30 +55,26 @@ export async function createPublicBooking(payload: {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     throw new Error('Você está offline. Conecte-se à internet para confirmar o agendamento.');
   }
-  const resp = await fetch('/api/public/bookings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Não foi possível confirmar a reserva.');
-  }
-  return data as PublicBookingReceipt;
+  return readResponse(
+    await fetch('/api/public/bookings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+    'Não foi possível confirmar a reserva.'
+  );
 }
 
 export async function fetchPublicBookingStatus(
   appointmentId: string,
   date: string
 ): Promise<{ status: string; startTime: string; endTime: string }> {
-  const resp = await fetch(
-    `/api/public/bookings/${encodeURIComponent(appointmentId)}/status?date=${encodeURIComponent(date)}`
+  return readResponse(
+    await fetch(
+      `/api/public/bookings/${encodeURIComponent(appointmentId)}/status?date=${encodeURIComponent(date)}`
+    ),
+    'Erro ao consultar status.'
   );
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Erro ao consultar status.');
-  }
-  return data as { status: string; startTime: string; endTime: string };
 }
 
 export async function cancelPublicBooking(
@@ -88,66 +85,62 @@ export async function cancelPublicBooking(
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     throw new Error('Conecte-se à internet para cancelar seu agendamento.');
   }
-  const resp = await fetch(`/api/public/bookings/${encodeURIComponent(appointmentId)}/cancel`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ date, cancelToken }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Não foi possível cancelar o agendamento.');
-  }
+  await readResponse(
+    await fetch(`/api/public/bookings/${encodeURIComponent(appointmentId)}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, cancelToken }),
+    }),
+    'Não foi possível cancelar o agendamento.'
+  );
 }
 
-export async function verifyAdminOnServer(firebaseUser?: User | null): Promise<{
+export async function verifyAdminOnServer(currentUser?: User | null): Promise<{
   authorized: boolean;
   email: string;
   uid: string;
   role: string;
 }> {
-  const user = firebaseUser ?? auth.currentUser;
+  const user = currentUser ?? (await supabase.auth.getUser()).data.user;
   if (!user) throw new Error('Usuário não autenticado.');
 
-  const requestVerify = async (forceRefresh: boolean) => {
-    const token = await user.getIdToken(forceRefresh);
-    const resp = await fetch('/api/admin/me', {
-      headers: { Authorization: `Bearer ${token}` },
+  const requestVerify = async (refresh: boolean) => {
+    let { data: { session } } = await supabase.auth.getSession();
+    if (refresh || !session) {
+      const result = await supabase.auth.refreshSession();
+      if (result.error) throw result.error;
+      session = result.data.session;
+    }
+    if (!session?.access_token) throw new Error('Sessão do Supabase inválida.');
+    const response = await fetch('/api/admin/me', {
+      headers: { Authorization: `Bearer ${session.access_token}` },
       cache: 'no-store',
     });
-    const text = await resp.text();
-    let data: Record<string, unknown> = {};
-    try {
-      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      data = {};
-    }
-    return { resp, data };
+    const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    return { response, data };
   };
 
-  let { resp, data } = await requestVerify(false);
-  if (resp.status === 401) {
-    ({ resp, data } = await requestVerify(true));
-  }
-
-  if (!resp.ok) {
+  let result = await requestVerify(false);
+  if (result.response.status === 401) result = await requestVerify(true);
+  if (!result.response.ok) {
     throw new Error(
-      (typeof data.error === 'string' && data.error) || 'Acesso administrativo negado.'
+      (typeof result.data.error === 'string' && result.data.error) ||
+        'Acesso administrativo negado.'
     );
   }
-  return data as { authorized: boolean; email: string; uid: string; role: string };
+  return result.data as { authorized: boolean; email: string; uid: string; role: string };
 }
 
 export async function exportBackupFromServer(): Promise<Record<string, unknown>> {
-  const user = auth.currentUser;
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Usuário não autenticado.');
-  const token = await user.getIdToken();
-  const resp = await fetch('/api/admin/backup/export', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(data.error || 'Erro ao exportar dados.');
-  }
-  return data as Record<string, unknown>;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Sessão do Supabase inválida.');
+  return readResponse(
+    await fetch('/api/admin/backup/export', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    }),
+    'Erro ao exportar dados.'
+  );
 }

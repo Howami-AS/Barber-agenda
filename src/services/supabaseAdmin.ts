@@ -11,7 +11,7 @@ import {
   updateDoc,
   writeBatch,
   type Unsubscribe,
-} from 'firebase/firestore';
+} from './supabaseRecords';
 import type {
   AdminUser,
   Appointment,
@@ -34,7 +34,7 @@ import {
   normalizePhone,
   timeStrToMinutes,
 } from '../utils/timezone';
-import { auth, db, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, handleDatabaseError, OperationType } from './supabaseData';
 
 function makeId(prefix: string): string {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -90,7 +90,7 @@ export async function ensureInitialBarbershopSeed(): Promise<void> {
       await batch.commit();
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'settings/services/businessHours');
+    handleDatabaseError(err, OperationType.WRITE, 'settings/services/businessHours');
   }
 }
 
@@ -104,7 +104,7 @@ export function subscribeSettings(cb: (s: BarbershopSettings) => void): Unsubscr
         cb(DEFAULT_SETTINGS);
       }
     },
-    (err) => handleFirestoreError(err, OperationType.GET, 'settings/barbershop')
+    (err) => handleDatabaseError(err, OperationType.GET, 'settings/barbershop')
   );
 }
 
@@ -122,7 +122,7 @@ export async function saveSettings(data: BarbershopSettings): Promise<void> {
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'settings/barbershop');
+    handleDatabaseError(err, OperationType.WRITE, 'settings/barbershop');
   }
 }
 
@@ -137,7 +137,7 @@ export function subscribeServices(cb: (items: ServiceItem[]) => void): Unsubscri
       list.sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || a.name.localeCompare(b.name));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'services')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'services')
   );
 }
 
@@ -180,7 +180,7 @@ export async function saveService(
     }
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `services/${id}`);
+    handleDatabaseError(err, OperationType.WRITE, `services/${id}`);
   }
 }
 
@@ -188,7 +188,7 @@ export async function removeService(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'services', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `services/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `services/${id}`);
   }
 }
 
@@ -207,7 +207,7 @@ export function subscribeBusinessHours(cb: (days: BusinessHoursDay[]) => void): 
       list.sort((a, b) => a.dayOfWeek - b.dayOfWeek);
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'businessHours')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'businessHours')
   );
 }
 
@@ -226,7 +226,7 @@ export async function saveBusinessHoursDay(day: BusinessHoursDay): Promise<void>
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `businessHours/${id}`);
+    handleDatabaseError(err, OperationType.WRITE, `businessHours/${id}`);
   }
 }
 
@@ -241,7 +241,7 @@ export function subscribeBlockedPeriods(cb: (items: BlockedPeriod[]) => void): U
       list.sort((a, b) => a.startDate.localeCompare(b.startDate));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'blockedPeriods')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'blockedPeriods')
   );
 }
 
@@ -262,7 +262,7 @@ export async function saveBlockedPeriod(
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, `blockedPeriods/${id}`);
+    handleDatabaseError(err, OperationType.CREATE, `blockedPeriods/${id}`);
   }
 }
 
@@ -270,7 +270,7 @@ export async function removeBlockedPeriod(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'blockedPeriods', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `blockedPeriods/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `blockedPeriods/${id}`);
   }
 }
 
@@ -288,7 +288,7 @@ export function subscribeAppointments(cb: (items: Appointment[]) => void): Unsub
       });
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'appointments')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'appointments')
   );
 }
 
@@ -302,7 +302,7 @@ export function subscribeDaySchedules(cb: (map: Record<string, DaySchedule>) => 
       });
       cb(result);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'daySchedules')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'daySchedules')
   );
 }
 
@@ -382,7 +382,7 @@ export async function syncAdminConsistency(
       }
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'appointments/customers');
+    handleDatabaseError(err, OperationType.WRITE, 'appointments/customers');
   }
 }
 
@@ -552,7 +552,7 @@ export async function createOrUpdateManualAppointment(params: {
     if (err instanceof Error && err.message.startsWith('Conflito de horário')) {
       throw err;
     }
-    handleFirestoreError(err, OperationType.WRITE, `appointments/${aptId}`);
+    handleDatabaseError(err, OperationType.WRITE, `appointments/${aptId}`);
   }
 }
 
@@ -615,7 +615,7 @@ export async function updateAppointmentStatus(
       }
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `appointments/${appointment.id}`);
+    handleDatabaseError(err, OperationType.UPDATE, `appointments/${appointment.id}`);
   }
 }
 
@@ -630,7 +630,7 @@ export function subscribeCustomers(cb: (items: Customer[]) => void): Unsubscribe
       list.sort((a, b) => a.name.localeCompare(b.name));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'customers')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'customers')
   );
 }
 
@@ -667,7 +667,7 @@ export async function saveCustomer(input: {
       });
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `customers/${normalizedPhone}`);
+    handleDatabaseError(err, OperationType.WRITE, `customers/${normalizedPhone}`);
   }
 }
 
@@ -682,7 +682,7 @@ export function subscribePayments(cb: (items: PaymentRecord[]) => void): Unsubsc
       list.sort((a, b) => b.date.localeCompare(a.date));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'payments')
   );
 }
 
@@ -752,7 +752,7 @@ export async function createPayment(input: {
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, `payments/${id}`);
+    handleDatabaseError(err, OperationType.CREATE, `payments/${id}`);
   }
 }
 
@@ -760,7 +760,7 @@ export async function removePayment(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'payments', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `payments/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `payments/${id}`);
   }
 }
 
@@ -775,7 +775,7 @@ export function subscribeExpenses(cb: (items: ExpenseRecord[]) => void): Unsubsc
       list.sort((a, b) => b.date.localeCompare(a.date));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'expenses')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'expenses')
   );
 }
 
@@ -795,7 +795,7 @@ export async function createExpense(input: {
       createdAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, `expenses/${id}`);
+    handleDatabaseError(err, OperationType.CREATE, `expenses/${id}`);
   }
 }
 
@@ -803,7 +803,7 @@ export async function removeExpense(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'expenses', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `expenses/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `expenses/${id}`);
   }
 }
 
@@ -817,7 +817,7 @@ export function subscribeAdmins(cb: (items: AdminUser[]) => void): Unsubscribe {
       }));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'admins')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'admins')
   );
 }
 
@@ -836,20 +836,21 @@ export async function addAuthorizedAdmin(email: string, name: string): Promise<v
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `admins/${cleanEmail}`);
+    handleDatabaseError(err, OperationType.WRITE, `admins/${cleanEmail}`);
   }
 }
 
 export async function removeAuthorizedAdmin(id: string): Promise<void> {
-  const currentUid = auth.currentUser?.uid;
-  const currentEmail = auth.currentUser?.email?.toLowerCase();
+  const { data: { user } } = await auth.getUser();
+  const currentUid = user?.id;
+  const currentEmail = user?.email?.toLowerCase();
   if (id === currentUid || (currentEmail && id === currentEmail)) {
     throw new Error('Você não pode remover a própria conta conectada.');
   }
   try {
     await deleteDoc(doc(db, 'admins', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `admins/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `admins/${id}`);
   }
 }
 
@@ -864,11 +865,11 @@ export function subscribeBackups(cb: (items: BackupSnapshot[]) => void): Unsubsc
       list.sort((a, b) => b.id.localeCompare(a.id));
       cb(list);
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'backups')
+    (err) => handleDatabaseError(err, OperationType.LIST, 'backups')
   );
 }
 
-function sanitizeForFirestoreMap(value: unknown): unknown {
+function sanitizeJsonMap(value: unknown): unknown {
   if (value === null || value === undefined) return null;
   if (
     typeof value === 'string' ||
@@ -878,7 +879,7 @@ function sanitizeForFirestoreMap(value: unknown): unknown {
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeForFirestoreMap(item));
+    return value.map((item) => sanitizeJsonMap(item));
   }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
@@ -892,7 +893,7 @@ function sanitizeForFirestoreMap(value: unknown): unknown {
     const clean: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
       if (v === undefined || k === 'cancelHash') continue;
-      clean[k] = sanitizeForFirestoreMap(v);
+      clean[k] = sanitizeJsonMap(v);
     }
     return clean;
   }
@@ -919,7 +920,7 @@ export async function createRemoteBackupSnapshot(
     throw new Error('E-mail do administrador inválido para registrar snapshot.');
   }
 
-  const payload = sanitizeForFirestoreMap({
+  const payload = sanitizeJsonMap({
     version: 2,
     createdAtIso: new Date().toISOString(),
     ...data,
@@ -928,7 +929,7 @@ export async function createRemoteBackupSnapshot(
   const approxBytes = new TextEncoder().encode(JSON.stringify(payload)).length;
   if (approxBytes > 880000) {
     throw new Error(
-      'O tamanho do snapshot excede o limite de documento do Firestore (900 KB). Use a exportação JSON completa.'
+      'O snapshot excede o limite interno de segurança. Use a exportação JSON completa.'
     );
   }
 
@@ -948,7 +949,7 @@ export async function createRemoteBackupSnapshot(
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, `backups/${id}`);
+    handleDatabaseError(err, OperationType.CREATE, `backups/${id}`);
   }
 }
 
@@ -956,6 +957,6 @@ export async function removeRemoteBackup(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'backups', id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `backups/${id}`);
+    handleDatabaseError(err, OperationType.DELETE, `backups/${id}`);
   }
 }

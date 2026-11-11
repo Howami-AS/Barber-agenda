@@ -51,7 +51,7 @@ export const PublicPage: React.FC<PublicPageProps> = ({ onNavigateAdmin }) => {
       setLoadError(
         err instanceof Error
           ? err.message
-          : 'Não foi possível carregar os dados reais do Cloud Firestore.'
+          : 'Não foi possível carregar os dados reais do Supabase.'
       );
     } finally {
       setLoading(false);
@@ -257,7 +257,7 @@ export const PublicPage: React.FC<PublicPageProps> = ({ onNavigateAdmin }) => {
               </div>
             ) : services.length === 0 ? (
               <div className="rounded-2xl bg-[#252525] border border-white/10 p-6 text-sm text-[#A3A3A3]">
-                Nenhum serviço ativo disponível no momento. Caso seja a primeira execução, o administrador deve acessar o Painel Administrativo para ativar os serviços no Cloud Firestore.
+                Nenhum serviço ativo disponível no momento. Caso seja a primeira execução, o administrador deve acessar o Painel Administrativo para ativar os serviços no Supabase.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

@@ -158,7 +158,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToPublic }
             >
               {showEmailForm
                 ? 'Ocultar login por e-mail e senha'
-                : 'Usar e-mail e senha (quando configurado no Firebase)'}
+                : 'Usar e-mail e senha (quando configurado no Supabase Auth)'}
             </button>
 
             {showEmailForm && (

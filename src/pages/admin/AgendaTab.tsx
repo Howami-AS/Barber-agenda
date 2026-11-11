@@ -15,7 +15,7 @@ import {
   createOrUpdateManualAppointment,
   createPayment,
   updateAppointmentStatus,
-} from '../../services/firestoreAdmin';
+} from '../../services/supabaseAdmin';
 import type {
   Appointment,
   AppointmentStatus,

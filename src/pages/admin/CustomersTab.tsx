@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { MessageCircle, Plus, Search, User, X } from 'lucide-react';
-import { saveCustomer } from '../../services/firestoreAdmin';
+import { saveCustomer } from '../../services/supabaseAdmin';
 import type { Appointment, Customer } from '../../types/barber';
 import {
   buildWhatsAppUrl,

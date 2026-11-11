@@ -5,7 +5,7 @@ import {
   createPayment,
   removeExpense,
   removePayment,
-} from '../../services/firestoreAdmin';
+} from '../../services/supabaseAdmin';
 import type {
   Appointment,
   ExpenseRecord,
