@@ -289,16 +289,12 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
           </form>
 
           <div className="divide-y divide-white/10 pt-2">
-            <div className="py-2.5 flex items-center justify-between text-xs">
-              <div>
-                <p className="text-white font-medium">alysson.mgs@gmail.com</p>
-                <p className="text-[#A3A3A3]">Proprietário principal (protegido)</p>
-              </div>
-              <span className="text-[#C9A15B] font-medium">Ativo</span>
-            </div>
-            {admins
-              .filter((adm) => adm.email.toLowerCase() !== 'alysson.mgs@gmail.com')
-              .map((adm) => {
+            {admins.length === 0 ? (
+              <p className="py-3 text-xs text-[#A3A3A3]">
+                Nenhum administrador cadastrado na coleção <span className="font-mono text-white">admins</span>.
+              </p>
+            ) : (
+              admins.map((adm) => {
                 const isCurrentUser =
                   adm.id === user?.uid ||
                   adm.email.toLowerCase() === (user?.email || '').toLowerCase();
@@ -334,7 +330,8 @@ export const BackupSecurityTab: React.FC<BackupSecurityTabProps> = ({
                     )}
                   </div>
                 );
-              })}
+              })
+            )}
           </div>
         </div>
       </div>

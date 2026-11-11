@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'barber-agenda-shell-v1';
+const CACHE_VERSION = 'barber-agenda-shell-v2';
 const APP_SHELL_URLS = [
   '/',
   '/index.html',
@@ -25,13 +25,16 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((key) => key !== CACHE_VERSION)
-          .map((key) => caches.delete(key))
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_VERSION)
+            .map((key) => caches.delete(key))
+        )
       )
-    ).then(() => self.clients.claim())
+      .then(() => self.clients.claim())
   );
 });
 
@@ -43,9 +46,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Never cache API endpoints, live availability, bookings, or Firebase PII/Auth requests
+  // Never intercept API endpoints, Vite dev modules, or Firebase Auth/Firestore requests
   if (
     url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/@vite') ||
+    url.pathname.startsWith('/@react-refresh') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/node_modules/') ||
     BYPASS_HOSTS.some((host) => url.hostname.includes(host))
   ) {
     return;
@@ -54,7 +61,7 @@ self.addEventListener('fetch', (event) => {
   // Navigation requests: Network-first with offline app shell fallback
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: 'no-store' })
         .then((response) => {
           if (response && response.ok) {
             const copy = response.clone();
@@ -67,11 +74,27 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets (JS, CSS, images, fonts): Stale-While-Revalidate for same-origin and Google Fonts
   const isSameOrigin = url.origin === self.location.origin;
   const isGoogleFonts =
     url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
 
+  // Scripts & styles: Network-first so code fixes always apply immediately
+  if (isSameOrigin && (request.destination === 'script' || request.destination === 'style')) {
+    event.respondWith(
+      fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const copy = networkResponse.clone();
+            caches.open(CACHE_VERSION).then((cache) => cache.put(request, copy));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Images, icons, fonts: Stale-While-Revalidate
   if (isSameOrigin || isGoogleFonts) {
     event.respondWith(
       caches.match(request).then((cachedResponse) => {

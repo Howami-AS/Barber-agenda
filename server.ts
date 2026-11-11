@@ -47,7 +47,6 @@ const ROOT_DIR = path.dirname(__filename);
 const configPath = path.resolve(ROOT_DIR, 'firebase-applet-config.json');
 const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-const BOOTSTRAPPED_OWNER_EMAIL = 'alysson.mgs@gmail.com';
 const parsedPort = Number.parseInt(process.env.PORT || '3000', 10);
 const PORT = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : 3000;
 
@@ -208,9 +207,6 @@ async function checkIsAuthorizedAdmin(
   user: VerifiedAdminUser
 ): Promise<{ authorized: boolean; role: 'owner' | 'admin' | null }> {
   if (!user.emailVerified) return { authorized: false, role: null };
-  if (user.email === BOOTSTRAPPED_OWNER_EMAIL) {
-    return { authorized: true, role: 'owner' };
-  }
 
   if (adminDb) {
     const byUid = await adminDb.collection('admins').doc(user.uid).get();
