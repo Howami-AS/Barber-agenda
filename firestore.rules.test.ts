@@ -34,7 +34,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     name: 'Spoofed Unverified Admin Email',
     operation: 'list',
     path: 'payments',
-    auth: { uid: 'spoof_uid', email: 'owner@barbearia.example', email_verified: false },
+    auth: { uid: 'spoof_uid', email: 'alysson.mgs@gmail.com', email_verified: false },
     expectedResult: 'PERMISSION_DENIED',
   },
   {
@@ -172,7 +172,7 @@ export const DIRTY_DOZEN_PAYLOADS: DirtyDozenCase[] = [
     id: 15,
     name: 'Non-Owner Admin Escalation or Owner Tampering',
     operation: 'update',
-    path: 'admins/owner@barbearia.example',
+    path: 'admins/alysson.mgs@gmail.com',
     auth: { uid: 'sub_admin_uid', email: 'subadmin@example.com', email_verified: true },
     payload: { active: false, role: 'admin' },
     expectedResult: 'PERMISSION_DENIED',

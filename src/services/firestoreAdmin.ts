@@ -841,6 +841,9 @@ export async function addAuthorizedAdmin(email: string, name: string): Promise<v
 }
 
 export async function removeAuthorizedAdmin(id: string): Promise<void> {
+  if (id === 'alysson.mgs@gmail.com') {
+    throw new Error('O administrador proprietário principal não pode ser removido.');
+  }
   const currentUid = auth.currentUser?.uid;
   const currentEmail = auth.currentUser?.email?.toLowerCase();
   if (id === currentUid || (currentEmail && id === currentEmail)) {

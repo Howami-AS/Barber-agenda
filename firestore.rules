@@ -51,27 +51,35 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function isBootstrappedOwner() {
+      return isVerifiedUser() && request.auth.token.email == 'alysson.mgs@gmail.com';
+    }
+
     function isAdmin() {
-      return isVerifiedUser() && (
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-          && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true)
-        ||
-        (request.auth.token.email is string
-          && exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
-          && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.active == true)
+      return isBootstrappedOwner() || (
+        isVerifiedUser() && (
+          (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+            && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true)
+          ||
+          (request.auth.token.email is string
+            && exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+            && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.active == true)
+        )
       );
     }
 
     function isOwner() {
-      return isVerifiedUser() && (
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-          && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true
-          && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'owner')
-        ||
-        (request.auth.token.email is string
-          && exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
-          && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.active == true
-          && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.role == 'owner')
+      return isBootstrappedOwner() || (
+        isVerifiedUser() && (
+          (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+            && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true
+            && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'owner')
+          ||
+          (request.auth.token.email is string
+            && exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+            && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.active == true
+            && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.role == 'owner')
+        )
       );
     }
 
@@ -283,15 +291,19 @@ service cloud.firestore {
       allow create: if isValidId(adminId) && isValidAdminUser(incoming()) && isAdmin()
         && (adminId == incoming().email || isValidDocId(adminId))
         && (incoming().role == 'admin' || isOwner())
+        && (adminId != 'alysson.mgs@gmail.com' || isBootstrappedOwner())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(adminId) && isValidAdminUser(incoming()) && isAdmin()
+        && (adminId != 'alysson.mgs@gmail.com' || isBootstrappedOwner())
         && (incoming().role == existing().role || isOwner())
         && (existing().role != 'owner' || isOwner())
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'updatedAt']);
       allow delete: if isValidId(adminId) && isAdmin()
+        && adminId != 'alysson.mgs@gmail.com'
+        && existing().email != 'alysson.mgs@gmail.com'
         && adminId != request.auth.uid
         && adminId != request.auth.token.email
         && existing().email != request.auth.token.email
