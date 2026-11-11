@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#171717" />
+  <rect x="20" y="20" width="472" height="472" rx="80" fill="none" stroke="#C9A15B" stroke-width="6" stroke-opacity="0.35" />
+  <g transform="translate(256 256)">
+    <!-- Minimalist Geometric Barber Razor & Monogram Frame -->
+    <polygon points="0,-148 128,-74 128,74 0,148 -128,74 -128,-74" fill="#252525" stroke="#C9A15B" stroke-width="10" stroke-linejoin="round" />
+    <!-- Stylized Gold "B" + Precision Blade Line -->
+    <path d="M-48,-76 L16,-76 C52,-76 74,-56 74,-28 C74,-8 60,6 42,12 C64,18 80,36 80,60 C80,92 54,112 14,112 L-48,112 Z" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linejoin="round" />
+    <line x1="-48" y1="12" x2="42" y2="12" stroke="#C9A15B" stroke-width="16" stroke-linecap="round" />
+    <circle cx="-48" cy="-76" r="10" fill="#C9A15B" />
+    <circle cx="-48" cy="112" r="10" fill="#C9A15B" />
+    <!-- Precision Shear Accent -->
+    <line x1="-88" y1="-112" x2="88" y2="112" stroke="#C9A15B" stroke-width="6" stroke-linecap="round" stroke-opacity="0.45" />
+  </g>
+</svg>

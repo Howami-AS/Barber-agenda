@@ -1,0 +1,6 @@
+{
+  "name": "Barber Agenda",
+  "description": "Seu estilo. Seu horário. Sistema completo de agendamento e gestão profissional para barbearia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

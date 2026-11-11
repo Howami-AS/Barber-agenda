@@ -1,0 +1,440 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------
+    // Princípio de Negação por Padrão (Default-Deny)
+    // ---------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Primitivas Globais Endurecidas
+    // ---------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-@.]+$');
+    }
+
+    function isValidDocId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailStr(email) {
+      return email is string && email.size() >= 3 && email.size() <= 160
+        && email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$');
+    }
+
+    function isValidDateStr(d) {
+      return d is string && d.size() == 10
+        && d.matches('^20[2-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+    }
+
+    function isValidTimeStr(t) {
+      return t is string && t.size() == 5 && t.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedOwner() {
+      return isVerifiedUser() && request.auth.token.email == 'alysson.mgs@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedOwner() || (
+        isVerifiedUser() && (
+          (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+            && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true)
+          ||
+          (request.auth.token.email is string
+            && exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+            && get(/databases/$(database)/documents/admins/$(request.auth.token.email)).data.active == true)
+        )
+      );
+    }
+
+    // ---------------------------------------------------------
+    // Validadores Estritos de Esquema (Blueprint Sync)
+    // ---------------------------------------------------------
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['email', 'role', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'name', 'role', 'active', 'createdAt', 'updatedAt'])
+        && isValidEmailStr(data.email)
+        && (!('name' in data) || (data.name is string && data.name.size() <= 120))
+        && data.role in ['owner', 'admin']
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll([
+          'shopName', 'slogan', 'address', 'phone', 'whatsapp',
+          'minLeadMinutes', 'slotIntervalMinutes', 'cancellationMinHours', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'shopName', 'slogan', 'address', 'phone', 'whatsapp',
+          'minLeadMinutes', 'slotIntervalMinutes', 'cancellationMinHours', 'updatedAt'
+        ])
+        && data.shopName is string && data.shopName.size() >= 1 && data.shopName.size() <= 120
+        && data.slogan is string && data.slogan.size() <= 140
+        && data.address is string && data.address.size() <= 240
+        && data.phone is string && data.phone.size() <= 32
+        && data.whatsapp is string && data.whatsapp.size() <= 32
+        && data.minLeadMinutes is number && data.minLeadMinutes >= 0 && data.minLeadMinutes <= 10080
+        && data.slotIntervalMinutes is number && data.slotIntervalMinutes >= 5 && data.slotIntervalMinutes <= 120
+        && data.cancellationMinHours is number && data.cancellationMinHours >= 0 && data.cancellationMinHours <= 168
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidService(data) {
+      return data.keys().hasAll(['name', 'price', 'durationMinutes', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'description', 'price', 'durationMinutes', 'active',
+          'isDemo', 'sortOrder', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('description' in data) || (data.description is string && data.description.size() <= 400))
+        && data.price is number && data.price >= 0 && data.price <= 50000
+        && data.durationMinutes is number && data.durationMinutes >= 5 && data.durationMinutes <= 480
+        && data.active is bool
+        && (!('isDemo' in data) || data.isDemo is bool)
+        && (!('sortOrder' in data) || (data.sortOrder is number && data.sortOrder >= 0 && data.sortOrder <= 9999))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'phone', 'normalizedPhone', 'totalVisits', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'phone', 'normalizedPhone', 'firstVisitAt',
+          'lastVisitAt', 'totalVisits', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.phone is string && data.phone.size() >= 8 && data.phone.size() <= 32
+        && data.normalizedPhone is string && data.normalizedPhone.size() >= 10 && data.normalizedPhone.size() <= 24
+        && data.normalizedPhone.matches('^[0-9]{10,15}$')
+        && (!('firstVisitAt' in data) || (data.firstVisitAt is string && data.firstVisitAt.size() <= 40))
+        && (!('lastVisitAt' in data) || (data.lastVisitAt is string && data.lastVisitAt.size() <= 40))
+        && data.totalVisits is number && data.totalVisits >= 0 && data.totalVisits <= 100000
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll([
+          'confirmationCode', 'serviceId', 'serviceName', 'servicePrice',
+          'durationMinutes', 'date', 'startTime', 'endTime', 'startMinutes',
+          'endMinutes', 'customerName', 'customerPhone', 'normalizedPhone',
+          'status', 'source', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'confirmationCode', 'serviceId', 'serviceName', 'servicePrice',
+          'durationMinutes', 'date', 'startTime', 'endTime', 'startMinutes',
+          'endMinutes', 'customerName', 'customerPhone', 'normalizedPhone',
+          'status', 'source', 'notes', 'cancelHash', 'paymentId', 'createdAt', 'updatedAt'
+        ])
+        && data.confirmationCode is string && data.confirmationCode.size() >= 4 && data.confirmationCode.size() <= 24
+        && isValidDocId(data.serviceId)
+        && data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 100
+        && data.servicePrice is number && data.servicePrice >= 0 && data.servicePrice <= 50000
+        && data.durationMinutes is number && data.durationMinutes >= 5 && data.durationMinutes <= 480
+        && isValidDateStr(data.date)
+        && isValidTimeStr(data.startTime)
+        && isValidTimeStr(data.endTime)
+        && data.startMinutes is number && data.startMinutes >= 0 && data.startMinutes < 1440
+        && data.endMinutes is number && data.endMinutes > data.startMinutes && data.endMinutes <= 1440
+        && (data.endMinutes - data.startMinutes) == data.durationMinutes
+        && data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 120
+        && data.customerPhone is string && data.customerPhone.size() >= 8 && data.customerPhone.size() <= 32
+        && data.normalizedPhone is string && data.normalizedPhone.matches('^[0-9]{10,15}$')
+        && data.status in ['pending', 'confirmed', 'completed', 'cancelled', 'no_show']
+        && data.source in ['public', 'admin']
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('cancelHash' in data) || (data.cancelHash is bytes && data.cancelHash.size() == 32))
+        && (!('paymentId' in data) || (data.paymentId is string && data.paymentId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDaySchedule(data, dateId) {
+      return data.keys().hasAll(['date', 'bookings', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'bookings', 'updatedAt'])
+        && isValidDateStr(data.date)
+        && data.date == dateId
+        && data.bookings is map
+        && data.bookings.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusinessHours(data) {
+      return data.keys().hasAll(['dayOfWeek', 'label', 'isOpen', 'startTime', 'endTime', 'hasBreak', 'updatedAt'])
+        && data.keys().hasOnly(['dayOfWeek', 'label', 'isOpen', 'startTime', 'endTime', 'hasBreak', 'breakStart', 'breakEnd', 'updatedAt'])
+        && data.dayOfWeek is number && data.dayOfWeek >= 0 && data.dayOfWeek <= 6
+        && data.label is string && data.label.size() >= 2 && data.label.size() <= 32
+        && data.isOpen is bool
+        && isValidTimeStr(data.startTime)
+        && isValidTimeStr(data.endTime)
+        && (!data.isOpen || data.endTime > data.startTime)
+        && data.hasBreak is bool
+        && (!('breakStart' in data) || data.breakStart == '' || isValidTimeStr(data.breakStart))
+        && (!('breakEnd' in data) || data.breakEnd == '' || isValidTimeStr(data.breakEnd))
+        && (!data.hasBreak || (
+          'breakStart' in data && 'breakEnd' in data
+          && data.breakStart != '' && data.breakEnd != ''
+          && data.breakEnd > data.breakStart
+        ))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBlockedPeriod(data) {
+      return data.keys().hasAll(['title', 'type', 'startDate', 'endDate', 'allDay', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'type', 'startDate', 'endDate', 'allDay', 'startTime', 'endTime', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.type in ['folga', 'feriado', 'ferias', 'bloqueio']
+        && isValidDateStr(data.startDate)
+        && isValidDateStr(data.endDate)
+        && data.endDate >= data.startDate
+        && data.allDay is bool
+        && (!('startTime' in data) || data.startTime == '' || isValidTimeStr(data.startTime))
+        && (!('endTime' in data) || data.endTime == '' || isValidTimeStr(data.endTime))
+        && (data.allDay || (
+          'startTime' in data && 'endTime' in data
+          && data.startTime != '' && data.endTime != ''
+          && data.endTime > data.startTime
+        ))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['amount', 'serviceName', 'customerName', 'date', 'method', 'createdAt'])
+        && data.keys().hasOnly([
+          'amount', 'serviceId', 'serviceName', 'customerName',
+          'customerPhone', 'appointmentId', 'date', 'method', 'notes', 'createdAt'
+        ])
+        && data.amount is number && data.amount > 0 && data.amount <= 100000
+        && (!('serviceId' in data) || (data.serviceId is string && data.serviceId.size() <= 128))
+        && data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 100
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && (!('customerPhone' in data) || (data.customerPhone is string && data.customerPhone.size() <= 32))
+        && (!('appointmentId' in data) || (data.appointmentId is string && data.appointmentId.size() <= 128))
+        && isValidDateStr(data.date)
+        && data.method in ['dinheiro', 'pix', 'cartao_debito', 'cartao_credito']
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['description', 'amount', 'category', 'date', 'createdAt'])
+        && data.keys().hasOnly(['description', 'amount', 'category', 'date', 'createdAt'])
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 160
+        && data.amount is number && data.amount > 0 && data.amount <= 100000
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && isValidDateStr(data.date)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidBackup(data) {
+      return data.keys().hasAll(['label', 'createdBy', 'recordCounts', 'payload', 'createdAt'])
+        && data.keys().hasOnly(['label', 'createdBy', 'recordCounts', 'payload', 'createdAt'])
+        && data.label is string && data.label.size() >= 1 && data.label.size() <= 120
+        && isValidEmailStr(data.createdBy)
+        && data.recordCounts is map
+        && data.payload is map
+        && data.payload.keys().hasAll([
+          'version', 'createdAtIso', 'settings', 'services', 'businessHours',
+          'blockedPeriods', 'customers', 'appointments', 'payments', 'expenses'
+        ])
+        && data.createdAt is timestamp;
+    }
+
+    // ---------------------------------------------------------
+    // Regras por Coleção (Escrita Somente Admin + Leituras LGPD)
+    // ---------------------------------------------------------
+
+    // Dados de administradores (PII restrita exclusivamente a admins)
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(adminId) && isValidAdminUser(incoming()) && isAdmin()
+        && (adminId == incoming().email || isValidDocId(adminId))
+        && (incoming().role == 'admin' || isBootstrappedOwner())
+        && (adminId != 'alysson.mgs@gmail.com' || isBootstrappedOwner())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(adminId) && isValidAdminUser(incoming()) && isAdmin()
+        && (adminId != 'alysson.mgs@gmail.com' || isBootstrappedOwner())
+        && (incoming().role == existing().role || isBootstrappedOwner())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'updatedAt']);
+      allow delete: if isValidId(adminId) && isAdmin()
+        && adminId != 'alysson.mgs@gmail.com'
+        && existing().email != 'alysson.mgs@gmail.com'
+        && (existing().role != 'owner' || isBootstrappedOwner());
+    }
+
+    // Vitrine comercial pública (sem dados pessoais de clientes; escrita apenas admin)
+    match /settings/{settingId} {
+      allow get: if isValidDocId(settingId) && (settingId == 'barbershop' || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidDocId(settingId) && isValidSettings(incoming()) && isAdmin()
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Catálogo público de serviços e preços (sem dados pessoais; escrita apenas admin)
+    match /services/{serviceId} {
+      allow get: if isValidDocId(serviceId);
+      allow list: if true;
+      allow create: if isValidDocId(serviceId) && isValidService(incoming()) && isAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidDocId(serviceId) && isValidService(incoming()) && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'description', 'price', 'durationMinutes', 'active', 'isDemo', 'sortOrder', 'updatedAt'
+        ]);
+      allow delete: if isValidDocId(serviceId) && isAdmin();
+    }
+
+    // Horário semanal de funcionamento (sem dados pessoais; escrita apenas admin)
+    match /businessHours/{dayId} {
+      allow get: if isValidDocId(dayId);
+      allow list: if true;
+      allow create, update: if isValidDocId(dayId) && isValidBusinessHours(incoming()) && isAdmin()
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // Folgas, feriados e bloqueios (sem dados pessoais; escrita apenas admin)
+    match /blockedPeriods/{blockId} {
+      allow get: if isValidDocId(blockId);
+      allow list: if true;
+      allow create: if isValidDocId(blockId) && isValidBlockedPeriod(incoming()) && isAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidDocId(blockId) && isValidBlockedPeriod(incoming()) && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'type', 'startDate', 'endDate', 'allDay', 'startTime', 'endTime', 'updatedAt'
+        ]);
+      allow delete: if isValidDocId(blockId) && isAdmin();
+    }
+
+    // Mapa diário anônimo de ocupação (sem PII; get pontual sem list público; escrita apenas admin)
+    match /daySchedules/{dateId} {
+      allow get: if isValidDateStr(dateId);
+      allow list: if isAdmin();
+      allow create: if isValidDateStr(dateId)
+        && isValidDaySchedule(incoming(), dateId)
+        && isAdmin()
+        && incoming().updatedAt == request.time;
+      allow update: if isValidDateStr(dateId)
+        && isValidDaySchedule(incoming(), dateId)
+        && isAdmin()
+        && incoming().date == existing().date
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['bookings', 'updatedAt']);
+      allow delete: if isValidDateStr(dateId) && isAdmin();
+    }
+
+    // Agendamentos (Dados pessoais LGPD: acesso total restrito a admins)
+    match /appointments/{appointmentId} {
+      allow get: if isValidDocId(appointmentId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidDocId(appointmentId)
+        && isValidAppointment(incoming())
+        && isAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/services/$(incoming().serviceId));
+      allow update: if isValidDocId(appointmentId)
+        && isValidAppointment(incoming())
+        && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().source == existing().source
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'serviceId', 'serviceName', 'servicePrice', 'durationMinutes',
+          'date', 'startTime', 'endTime', 'startMinutes', 'endMinutes',
+          'customerName', 'customerPhone', 'normalizedPhone',
+          'status', 'notes', 'paymentId', 'updatedAt'
+        ]);
+      allow delete: if isValidDocId(appointmentId) && isAdmin();
+    }
+
+    // Cadastro de clientes (Dados pessoais LGPD: acesso total restrito a admins)
+    match /customers/{customerId} {
+      allow get: if isValidDocId(customerId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidDocId(customerId) && isValidCustomer(incoming()) && isAdmin()
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidDocId(customerId) && isValidCustomer(incoming()) && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'phone', 'normalizedPhone', 'firstVisitAt', 'lastVisitAt', 'totalVisits', 'notes', 'updatedAt'
+        ]);
+      allow delete: if isValidDocId(customerId) && isAdmin();
+    }
+
+    // Registros financeiros de pagamentos (PII + dados sensíveis: restrito a admins)
+    match /payments/{paymentId} {
+      allow get: if isValidDocId(paymentId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidDocId(paymentId) && isValidPayment(incoming()) && isAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if isValidDocId(paymentId) && isValidPayment(incoming()) && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'amount', 'serviceId', 'serviceName', 'customerName', 'customerPhone', 'appointmentId', 'date', 'method', 'notes'
+        ]);
+      allow delete: if isValidDocId(paymentId) && isAdmin();
+    }
+
+    // Despesas operacionais (Dados financeiros internos: restrito a admins)
+    match /expenses/{expenseId} {
+      allow get: if isValidDocId(expenseId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidDocId(expenseId) && isValidExpense(incoming()) && isAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if isValidDocId(expenseId) && isValidExpense(incoming()) && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'description', 'amount', 'category', 'date'
+        ]);
+      allow delete: if isValidDocId(expenseId) && isAdmin();
+    }
+
+    // Snapshots de backup contendo PII e histórico completo (Restrito a admins)
+    match /backups/{backupId} {
+      allow get: if isValidDocId(backupId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidDocId(backupId) && isValidBackup(incoming()) && isAdmin()
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidDocId(backupId) && isAdmin();
+    }
+  }
+}
