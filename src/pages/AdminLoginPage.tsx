@@ -9,8 +9,17 @@ interface AdminLoginPageProps {
 }
 
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToPublic }) => {
-  const { user, isAuthorizedAdmin, authError, loginWithGoogle, loginWithEmail, resetPassword, logout } =
-    useAuth();
+  const {
+    user,
+    loading,
+    isAuthorizedAdmin,
+    authError,
+    loginWithGoogle,
+    loginWithEmail,
+    resetPassword,
+    logout,
+    retryAdminCheck,
+  } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -90,7 +99,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToPublic }
             </p>
           </div>
 
-          {user && !isAuthorizedAdmin && (
+          {user && !isAuthorizedAdmin && !loading && !busy && (
             <div className="rounded-xl bg-red-500/15 border border-red-500/40 p-4 space-y-3 text-sm">
               <p className="text-red-200">
                 {authError || (
@@ -99,14 +108,23 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onBackToPublic }
                   </>
                 )}
               </p>
-              <button
-                type="button"
-                onClick={() => void logout()}
-                className="inline-flex items-center gap-2 text-xs font-medium text-white underline"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sair e tentar outra conta</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => void retryAdminCheck()}
+                  className="text-xs font-medium text-[#C9A15B] underline"
+                >
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="inline-flex items-center gap-2 text-xs font-medium text-white underline"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sair e tentar outra conta</span>
+                </button>
+              </div>
             </div>
           )}
 

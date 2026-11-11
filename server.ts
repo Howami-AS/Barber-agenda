@@ -1,6 +1,8 @@
+import 'dotenv/config';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { initializeApp as initializeClientApp, getApps as getClientApps } from 'firebase/app';
 import {
@@ -13,7 +15,6 @@ import {
   runTransaction,
   serverTimestamp,
 } from 'firebase/firestore';
-import { createServer as createViteServer } from 'vite';
 import type {
   Appointment,
   BarbershopSettings,
@@ -41,11 +42,14 @@ interface FirebaseAppletConfig {
   firestoreDatabaseId: string;
 }
 
-const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+const __filename = fileURLToPath(import.meta.url);
+const ROOT_DIR = path.dirname(__filename);
+const configPath = path.resolve(ROOT_DIR, 'firebase-applet-config.json');
 const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
 const BOOTSTRAPPED_OWNER_EMAIL = 'alysson.mgs@gmail.com';
-const PORT = Number(process.env.PORT || 3000);
+const parsedPort = Number.parseInt(process.env.PORT || '3000', 10);
+const PORT = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : 3000;
 
 // Initialize Firebase Web Client SDK for public transactional endpoints & availability queries
 const clientApp =
@@ -57,18 +61,21 @@ let adminAuth: import('firebase-admin/auth').Auth | null = null;
 let adminDb: import('firebase-admin/firestore').Firestore | null = null;
 
 async function initOptionalAdminSdk() {
-  const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
   if (!saJson) return;
   try {
     const adminAppMod = await import('firebase-admin/app');
     const adminAuthMod = await import('firebase-admin/auth');
     const adminFsMod = await import('firebase-admin/firestore');
-    const parsed = JSON.parse(saJson);
+    const parsed = JSON.parse(saJson) as { private_key?: string; [key: string]: unknown };
+    if (typeof parsed.private_key === 'string') {
+      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    }
     const app =
       adminAppMod.getApps().length > 0
         ? adminAppMod.getApps()[0]
         : adminAppMod.initializeApp({
-            credential: adminAppMod.cert(parsed),
+            credential: adminAppMod.cert(parsed as import('firebase-admin/app').ServiceAccount),
             projectId: firebaseConfig.projectId,
           });
     adminAuth = adminAuthMod.getAuth(app);
@@ -116,6 +123,26 @@ function getClientIp(req: Request): string {
   return req.socket.remoteAddress || 'unknown';
 }
 
+// Per-date in-process mutex queue to deterministically serialize simultaneous bookings/cancellations
+const dateLocks = new Map<string, Promise<void>>();
+async function withDateLock<T>(date: string, task: () => Promise<T>): Promise<T> {
+  const previous = dateLocks.get(date) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  dateLocks.set(date, current);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (dateLocks.get(date) === current) {
+      dateLocks.delete(date);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Token & Admin Verification
 // ---------------------------------------------------------------------------
@@ -139,7 +166,8 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedAdminUser
         emailVerified: true,
         idToken,
       };
-    } catch {
+    } catch (err) {
+      console.warn('[Barber Agenda] Admin SDK verifyIdToken failed:', (err as Error).message);
       return null;
     }
   }
@@ -154,7 +182,11 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedAdminUser
         body: JSON.stringify({ idToken }),
       }
     );
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      console.warn('[Barber Agenda] Identity Toolkit accounts:lookup failed:', resp.status, errText);
+      return null;
+    }
     const data = (await resp.json()) as {
       users?: Array<{ localId?: string; email?: string; emailVerified?: boolean }>;
     };
@@ -166,7 +198,8 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedAdminUser
       emailVerified: true,
       idToken,
     };
-  } catch {
+  } catch (err) {
+    console.warn('[Barber Agenda] Identity Toolkit request error:', (err as Error).message);
     return null;
   }
 }
@@ -334,6 +367,7 @@ async function startServer() {
   await initOptionalAdminSdk();
 
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '1mb' }));
 
   app.use((_req, res, next) => {
@@ -519,7 +553,6 @@ async function startServer() {
     }
 
     try {
-      const blockedPeriods = await loadBlockedPeriods();
       const dayOfWeek = getDayOfWeekFromDateStr(date);
 
       const appointmentId = `apt_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -533,49 +566,57 @@ async function startServer() {
       let bookedServicePrice = 0;
       let bookedDuration = 0;
 
-      if (adminDb) {
-        await adminDb.runTransaction(async (tx) => {
-          const settingsRef = adminDb!.collection('settings').doc('barbershop');
-          const hoursRef = adminDb!.collection('businessHours').doc(`day_${dayOfWeek}`);
-          const serviceRef = adminDb!.collection('services').doc(serviceId);
-          const dayRef = adminDb!.collection('daySchedules').doc(date);
-          const aptRef = adminDb!.collection('appointments').doc(appointmentId);
-          const customerRef = adminDb!.collection('customers').doc(normalizedPhone);
+      await withDateLock(date, async () => {
+        if (adminDb) {
+          await adminDb.runTransaction(async (tx) => {
+            const settingsRef = adminDb!.collection('settings').doc('barbershop');
+            const hoursRef = adminDb!.collection('businessHours').doc(`day_${dayOfWeek}`);
+            const serviceRef = adminDb!.collection('services').doc(serviceId);
+            const dayRef = adminDb!.collection('daySchedules').doc(date);
+            const aptRef = adminDb!.collection('appointments').doc(appointmentId);
+            const customerRef = adminDb!.collection('customers').doc(normalizedPhone);
+            const blocksQuery = adminDb!.collection('blockedPeriods');
 
-          const [settingsSnap, hoursSnap, serviceSnap, daySnap, customerSnap] = await Promise.all([
-            tx.get(settingsRef),
-            tx.get(hoursRef),
-            tx.get(serviceRef),
-            tx.get(dayRef),
-            tx.get(customerRef),
-          ]);
+            const [settingsSnap, hoursSnap, serviceSnap, daySnap, customerSnap, blocksSnap] =
+              await Promise.all([
+                tx.get(settingsRef),
+                tx.get(hoursRef),
+                tx.get(serviceRef),
+                tx.get(dayRef),
+                tx.get(customerRef),
+                tx.get(blocksQuery),
+              ]);
 
-          if (!settingsSnap.exists || !hoursSnap.exists) {
-            throw Object.assign(
-              new Error('Configurações ou expediente da barbearia ainda não configurados.'),
-              { statusCode: 409 }
-            );
-          }
+            if (!settingsSnap.exists || !hoursSnap.exists) {
+              throw Object.assign(
+                new Error('Configurações ou expediente da barbearia ainda não configurados.'),
+                { statusCode: 409 }
+              );
+            }
 
-          if (!serviceSnap.exists) {
-            throw Object.assign(new Error('Serviço não encontrado.'), { statusCode: 404 });
-          }
+            if (!serviceSnap.exists) {
+              throw Object.assign(new Error('Serviço não encontrado.'), { statusCode: 404 });
+            }
 
-          const settings = settingsSnap.data() as BarbershopSettings;
-          const businessHoursDay = hoursSnap.data() as BusinessHoursDay;
-          const service = { id: serviceSnap.id, ...(serviceSnap.data() as Omit<ServiceItem, 'id'>) };
-          const daySchedule = daySnap.exists ? (daySnap.data() as DaySchedule) : undefined;
-          const nowFortaleza = getFortalezaNow();
+            const settings = settingsSnap.data() as BarbershopSettings;
+            const businessHoursDay = hoursSnap.data() as BusinessHoursDay;
+            const service = { id: serviceSnap.id, ...(serviceSnap.data() as Omit<ServiceItem, 'id'>) };
+            const daySchedule = daySnap.exists ? (daySnap.data() as DaySchedule) : undefined;
+            const blockedPeriods: BlockedPeriod[] = blocksSnap.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<BlockedPeriod, 'id'>),
+            }));
+            const nowFortaleza = getFortalezaNow();
 
-          const availability = computeDayAvailability({
-            dateStr: date,
-            service,
-            businessHoursDay,
-            blockedPeriods,
-            daySchedule,
-            settings,
-            now: nowFortaleza,
-          });
+            const availability = computeDayAvailability({
+              dateStr: date,
+              service,
+              businessHoursDay,
+              blockedPeriods,
+              daySchedule,
+              settings,
+              now: nowFortaleza,
+            });
 
           const matchedSlot = availability.slots.find((s) => s.startTime === startTime);
           if (!matchedSlot) {
@@ -655,9 +696,10 @@ async function startServer() {
               updatedAt: FieldValue.serverTimestamp(),
             });
           }
-        });
-      } else {
-        await runTransaction(firestoreDb, async (tx) => {
+          });
+        } else {
+          const blockedPeriods = await loadBlockedPeriods();
+          await runTransaction(firestoreDb, async (tx) => {
           const settingsRef = doc(firestoreDb, 'settings', 'barbershop');
           const hoursRef = doc(firestoreDb, 'businessHours', `day_${dayOfWeek}`);
           const serviceRef = doc(firestoreDb, 'services', serviceId);
@@ -750,9 +792,10 @@ async function startServer() {
             cancelHash: Bytes.fromUint8Array(new Uint8Array(cancelHashBytes)),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
+            });
           });
-        });
-      }
+        }
+      });
 
       res.status(201).json({
         appointmentId,
@@ -857,113 +900,168 @@ async function startServer() {
     }
 
     try {
-      const settings = await loadPublicSettings();
-      if (!settings) {
-        res.status(409).json({ error: 'Configurações da barbearia não encontradas.' });
-        return;
-      }
       const now = getFortalezaNow();
 
-      if (adminDb) {
-        await adminDb.runTransaction(async (tx) => {
-          const dayRef = adminDb!.collection('daySchedules').doc(date);
-          const aptRef = adminDb!.collection('appointments').doc(id);
-          const [daySnap, aptSnap] = await Promise.all([tx.get(dayRef), tx.get(aptRef)]);
-          if (!daySnap.exists || !aptSnap.exists) {
-            throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
-          }
+      await withDateLock(date, async () => {
+        if (adminDb) {
+          await adminDb.runTransaction(async (tx) => {
+            const settingsRef = adminDb!.collection('settings').doc('barbershop');
+            const dayRef = adminDb!.collection('daySchedules').doc(date);
+            const aptRef = adminDb!.collection('appointments').doc(id);
+            const [settingsSnap, daySnap, aptSnap] = await Promise.all([
+              tx.get(settingsRef),
+              tx.get(dayRef),
+              tx.get(aptRef),
+            ]);
 
-          const aptData = aptSnap.data() as Appointment & { cancelHash?: Buffer };
-          const providedHash = crypto.createHash('sha256').update(cancelToken).digest();
-          if (!aptData.cancelHash || !providedHash.equals(Buffer.from(aptData.cancelHash))) {
-            throw Object.assign(new Error('Token de cancelamento inválido.'), { statusCode: 403 });
-          }
-          if (aptData.status === 'cancelled' || aptData.status === 'completed') {
-            throw Object.assign(new Error('Este agendamento não pode mais ser cancelado.'), {
-              statusCode: 409,
-            });
-          }
+            if (!settingsSnap.exists) {
+              throw Object.assign(new Error('Configurações da barbearia não encontradas.'), {
+                statusCode: 409,
+              });
+            }
+            if (!daySnap.exists || !aptSnap.exists) {
+              throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
+            }
 
-          const dayDelta = diffDaysDateStr(date, now.dateStr);
-          const minutesUntilStart = dayDelta * 1440 + aptData.startMinutes - now.minutesOfDay;
-          if (minutesUntilStart < settings.cancellationMinHours * 60) {
-            throw Object.assign(
-              new Error(
-                `Cancelamentos online exigem antecedência mínima de ${settings.cancellationMinHours}h. Entre em contato pelo WhatsApp.`
-              ),
-              { statusCode: 400 }
-            );
-          }
+            const settings = settingsSnap.data() as BarbershopSettings;
+            const aptData = aptSnap.data() as Appointment & { cancelHash?: Buffer };
+            if (aptData.date !== date) {
+              throw Object.assign(new Error('Agendamento não corresponde à data informada.'), {
+                statusCode: 400,
+              });
+            }
 
-          const { FieldValue } = await import('firebase-admin/firestore');
-          const dayData = daySnap.data() as DaySchedule;
-          const nextBookings = {
-            ...(dayData.bookings || {}),
-            [id]: {
-              ...dayData.bookings[id],
-              status: 'cancelled',
-            },
-          };
-          tx.update(dayRef, { bookings: nextBookings, updatedAt: FieldValue.serverTimestamp() });
-          tx.update(aptRef, { status: 'cancelled', updatedAt: FieldValue.serverTimestamp() });
-        });
-      } else {
-        await runTransaction(firestoreDb, async (tx) => {
-          const dayRef = doc(firestoreDb, 'daySchedules', date);
-          const daySnap = await tx.get(dayRef);
-          if (!daySnap.exists()) {
-            throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
-          }
-          const dayData = daySnap.data() as DaySchedule;
-          const entry = dayData.bookings?.[id];
-          if (!entry) {
-            throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
-          }
-          if (entry.status !== 'pending' && entry.status !== 'confirmed') {
-            throw Object.assign(new Error('Este agendamento não pode mais ser cancelado.'), {
-              statusCode: 409,
-            });
-          }
+            const dayData = daySnap.data() as DaySchedule;
+            if (!dayData.bookings?.[id]) {
+              throw Object.assign(new Error('Agendamento não encontrado na agenda do dia.'), {
+                statusCode: 404,
+              });
+            }
 
-          const dayDelta = diffDaysDateStr(date, now.dateStr);
-          const minutesUntilStart = dayDelta * 1440 + entry.startMinutes - now.minutesOfDay;
-          if (minutesUntilStart < settings.cancellationMinHours * 60) {
-            throw Object.assign(
-              new Error(
-                `Cancelamentos online exigem antecedência mínima de ${settings.cancellationMinHours}h. Entre em contato pelo WhatsApp.`
-              ),
-              { statusCode: 400 }
-            );
-          }
+            const providedHash = crypto.createHash('sha256').update(cancelToken).digest();
+            const storedHash = aptData.cancelHash ? Buffer.from(aptData.cancelHash) : null;
+            if (
+              !storedHash ||
+              storedHash.length !== providedHash.length ||
+              !crypto.timingSafeEqual(providedHash, storedHash)
+            ) {
+              throw Object.assign(new Error('Token de cancelamento inválido.'), { statusCode: 403 });
+            }
 
-          const nextBookings = {
-            ...dayData.bookings,
-            [id]: {
-              startMinutes: entry.startMinutes,
-              endMinutes: entry.endMinutes,
-              status: 'cancelled',
-            },
-          };
+            if (aptData.status !== 'pending' && aptData.status !== 'confirmed') {
+              throw Object.assign(new Error('Este agendamento não pode mais ser cancelado.'), {
+                statusCode: 409,
+              });
+            }
 
-          tx.update(dayRef, {
-            date,
-            bookings: nextBookings,
-            lastCancelToken: cancelToken,
-            updatedAt: serverTimestamp(),
+            const dayDelta = diffDaysDateStr(date, now.dateStr);
+            const minutesUntilStart = dayDelta * 1440 + aptData.startMinutes - now.minutesOfDay;
+            if (minutesUntilStart < settings.cancellationMinHours * 60) {
+              throw Object.assign(
+                new Error(
+                  `Cancelamentos online exigem antecedência mínima de ${settings.cancellationMinHours}h. Entre em contato pelo WhatsApp.`
+                ),
+                { statusCode: 400 }
+              );
+            }
+
+            const customerRef = /^[0-9]{10,15}$/.test(aptData.normalizedPhone || '')
+              ? adminDb!.collection('customers').doc(aptData.normalizedPhone)
+              : null;
+            const customerSnap = customerRef ? await tx.get(customerRef) : null;
+
+            const { FieldValue } = await import('firebase-admin/firestore');
+            const nextBookings = {
+              ...(dayData.bookings || {}),
+              [id]: {
+                startMinutes: aptData.startMinutes,
+                endMinutes: aptData.endMinutes,
+                status: 'cancelled',
+              },
+            };
+            tx.update(dayRef, { bookings: nextBookings, updatedAt: FieldValue.serverTimestamp() });
+            tx.update(aptRef, { status: 'cancelled', updatedAt: FieldValue.serverTimestamp() });
+
+            if (customerRef && customerSnap?.exists) {
+              const cust = customerSnap.data() as { totalVisits?: number };
+              tx.update(customerRef, {
+                totalVisits: Math.max(0, (cust.totalVisits || 0) - 1),
+                updatedAt: FieldValue.serverTimestamp(),
+              });
+            }
           });
-        });
-      }
+        } else {
+          const settings = await loadPublicSettings();
+          if (!settings) {
+            throw Object.assign(new Error('Configurações da barbearia não encontradas.'), {
+              statusCode: 409,
+            });
+          }
+          await runTransaction(firestoreDb, async (tx) => {
+            const dayRef = doc(firestoreDb, 'daySchedules', date);
+            const daySnap = await tx.get(dayRef);
+            if (!daySnap.exists()) {
+              throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
+            }
+            const dayData = daySnap.data() as DaySchedule;
+            const entry = dayData.bookings?.[id];
+            if (!entry) {
+              throw Object.assign(new Error('Agendamento não encontrado.'), { statusCode: 404 });
+            }
+            if (entry.status !== 'pending' && entry.status !== 'confirmed') {
+              throw Object.assign(new Error('Este agendamento não pode mais ser cancelado.'), {
+                statusCode: 409,
+              });
+            }
+
+            const dayDelta = diffDaysDateStr(date, now.dateStr);
+            const minutesUntilStart = dayDelta * 1440 + entry.startMinutes - now.minutesOfDay;
+            if (minutesUntilStart < settings.cancellationMinHours * 60) {
+              throw Object.assign(
+                new Error(
+                  `Cancelamentos online exigem antecedência mínima de ${settings.cancellationMinHours}h. Entre em contato pelo WhatsApp.`
+                ),
+                { statusCode: 400 }
+              );
+            }
+
+            const nextBookings = {
+              ...dayData.bookings,
+              [id]: {
+                startMinutes: entry.startMinutes,
+                endMinutes: entry.endMinutes,
+                status: 'cancelled',
+              },
+            };
+
+            tx.update(dayRef, {
+              date,
+              bookings: nextBookings,
+              updatedAt: serverTimestamp(),
+            });
+          });
+        }
+      });
 
       res.json({ ok: true, status: 'cancelled' });
     } catch (err) {
       const statusCode = (err as { statusCode?: number }).statusCode || 500;
+      const code = (err as { code?: string }).code || '';
       const msg = (err as Error).message || 'Erro ao cancelar agendamento.';
       if (statusCode < 500) {
         res.status(statusCode).json({ error: msg });
         return;
       }
-      if (msg.includes('PERMISSION_DENIED') || msg.includes('permission-denied')) {
-        res.status(403).json({ error: 'Token de cancelamento inválido ou sem permissão.' });
+      if (
+        code === 'permission-denied' ||
+        msg.includes('PERMISSION_DENIED') ||
+        msg.includes('permission-denied') ||
+        msg.includes('Missing or insufficient permissions')
+      ) {
+        res.status(503).json({
+          error:
+            'As regras do Firestore exigem autenticação administrativa para cancelamento via servidor. Configure FIREBASE_SERVICE_ACCOUNT_JSON no servidor.',
+        });
         return;
       }
       console.error('Public cancellation error:', err);
@@ -1024,27 +1122,71 @@ async function startServer() {
     }
   });
 
+  // Reject unknown API endpoints as JSON 404 before SPA HTML fallback
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Endpoint de API não encontrado.' });
+  });
+
   // -------------------------------------------------------------------------
   // Vite Middleware (Dev) or Static Assets (Prod)
   // -------------------------------------------------------------------------
-  const isProduction = process.env.NODE_ENV === 'production';
-  if (!isProduction) {
+  const distDir = path.resolve(ROOT_DIR, 'dist');
+  const distIndexPath = path.join(distDir, 'index.html');
+  const hasCompiledDist = fs.existsSync(distIndexPath);
+  const useViteDev =
+    process.env.NODE_ENV === 'development' ||
+    (process.env.NODE_ENV !== 'production' &&
+      (!hasCompiledDist || process.env.DISABLE_HMR === 'true'));
+
+  if (useViteDev) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
+    if (!hasCompiledDist) {
+      console.warn(
+        `[Barber Agenda] Aviso: build de produção não encontrado em ${distIndexPath}. Execute "npm run build".`
+      );
+    }
+    app.use(
+      express.static(distDir, {
+        index: false,
+        maxAge: '1h',
+      })
+    );
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+      if (!fs.existsSync(distIndexPath)) {
+        res.status(503).send('Aplicação em preparação. Execute npm run build.');
+        return;
+      }
+      res.sendFile(distIndexPath);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Barber Agenda] Server listening on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(
+      `[Barber Agenda] Server listening on http://0.0.0.0:${PORT} (mode=${useViteDev ? 'dev-vite' : 'production-dist'})`
+    );
   });
+
+  server.on('error', (err) => {
+    console.error('[Barber Agenda] HTTP server failed to bind:', err);
+    process.exit(1);
+  });
+
+  const shutdown = (signal: string) => {
+    console.log(`[Barber Agenda] Received ${signal}, shutting down gracefully...`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
-void startServer();
+startServer().catch((err) => {
+  console.error('[Barber Agenda] Fatal startup error:', err);
+  process.exit(1);
+});

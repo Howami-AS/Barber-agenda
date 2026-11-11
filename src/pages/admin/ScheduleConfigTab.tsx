@@ -74,6 +74,9 @@ export const ScheduleConfigTab: React.FC<ScheduleConfigTabProps> = ({
         if (day.isOpen && day.hasBreak && (!day.breakStart || !day.breakEnd || day.breakEnd <= day.breakStart)) {
           throw new Error(`Intervalo inválido em ${day.label}.`);
         }
+        if (day.isOpen && day.hasBreak && (day.breakStart! < day.startTime || day.breakEnd! > day.endTime)) {
+          throw new Error(`O intervalo em ${day.label} deve ficar dentro do horário de funcionamento.`);
+        }
       }
       for (const day of daysDraft) {
         await saveBusinessHoursDay(day);
@@ -501,7 +504,16 @@ export const ScheduleConfigTab: React.FC<ScheduleConfigTabProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => void removeBlockedPeriod(blk.id)}
+                    onClick={async () => {
+                      setFeedback(null);
+                      try {
+                        await removeBlockedPeriod(blk.id);
+                      } catch (err) {
+                        setFeedback(
+                          err instanceof Error ? err.message : 'Erro ao remover bloqueio.'
+                        );
+                      }
+                    }}
                     className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-[#171717] border border-white/10 text-red-300 hover:border-red-500/40"
                     aria-label="Remover bloqueio"
                   >

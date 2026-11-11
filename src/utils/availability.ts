@@ -6,7 +6,7 @@ import type {
   DaySchedule,
   ServiceItem,
   TimeSlotOption,
-} from '../types/barber';
+} from '../types/barber.ts';
 import {
   diffDaysDateStr,
   getFortalezaNow,
@@ -14,7 +14,7 @@ import {
   minutesToTimeStr,
   timeStrToMinutes,
   type FortalezaNow,
-} from './timezone';
+} from './timezone.ts';
 
 interface Interval {
   start: number;
@@ -69,11 +69,36 @@ export function computeDayAvailability(params: {
     };
   }
 
+  if (
+    !Number.isFinite(service.durationMinutes) ||
+    service.durationMinutes < 5 ||
+    service.durationMinutes > 480
+  ) {
+    return {
+      date: dateStr,
+      isOpen: false,
+      closedReason: 'Duração do serviço inválida.',
+      slots: [],
+    };
+  }
+
   if (!businessHoursDay || !businessHoursDay.isOpen) {
     return {
       date: dateStr,
       isOpen: false,
       closedReason: 'Barbearia fechada neste dia da semana.',
+      slots: [],
+    };
+  }
+
+  if (
+    !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(businessHoursDay.startTime) ||
+    !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(businessHoursDay.endTime)
+  ) {
+    return {
+      date: dateStr,
+      isOpen: false,
+      closedReason: 'Horário de funcionamento inválido.',
       slots: [],
     };
   }
@@ -124,9 +149,13 @@ export function computeDayAvailability(params: {
   if (daySchedule?.bookings) {
     for (const booking of Object.values(daySchedule.bookings)) {
       if (
-        booking.status === 'pending' ||
-        booking.status === 'confirmed' ||
-        booking.status === 'completed'
+        booking &&
+        Number.isFinite(booking.startMinutes) &&
+        Number.isFinite(booking.endMinutes) &&
+        booking.endMinutes > booking.startMinutes &&
+        (booking.status === 'pending' ||
+          booking.status === 'confirmed' ||
+          booking.status === 'completed')
       ) {
         occupiedIntervals.push({
           start: booking.startMinutes,
@@ -136,9 +165,15 @@ export function computeDayAvailability(params: {
     }
   }
 
-  const duration = Math.max(5, service.durationMinutes);
-  const step = Math.max(5, settings.slotIntervalMinutes || 15);
-  const minLead = ignoreLeadTime ? 0 : Math.max(0, settings.minLeadMinutes || 0);
+  const duration = Math.round(service.durationMinutes);
+  const step = Number.isFinite(settings.slotIntervalMinutes)
+    ? Math.max(5, Math.min(120, Math.round(settings.slotIntervalMinutes)))
+    : 15;
+  const minLead = ignoreLeadTime
+    ? 0
+    : Number.isFinite(settings.minLeadMinutes)
+      ? Math.max(0, settings.minLeadMinutes)
+      : 0;
 
   const slots: TimeSlotOption[] = [];
 

@@ -1,3 +1,4 @@
+import type { User } from 'firebase/auth';
 import type {
   AvailabilityResult,
   BarbershopSettings,
@@ -98,21 +99,40 @@ export async function cancelPublicBooking(
   }
 }
 
-export async function verifyAdminOnServer(): Promise<{
+export async function verifyAdminOnServer(firebaseUser?: User | null): Promise<{
   authorized: boolean;
   email: string;
   uid: string;
   role: string;
 }> {
-  const user = auth.currentUser;
+  const user = firebaseUser ?? auth.currentUser;
   if (!user) throw new Error('Usuário não autenticado.');
-  const token = await user.getIdToken();
-  const resp = await fetch('/api/admin/me', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const data = await resp.json();
+
+  const requestVerify = async (forceRefresh: boolean) => {
+    const token = await user.getIdToken(forceRefresh);
+    const resp = await fetch('/api/admin/me', {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    const text = await resp.text();
+    let data: Record<string, unknown> = {};
+    try {
+      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+      data = {};
+    }
+    return { resp, data };
+  };
+
+  let { resp, data } = await requestVerify(false);
+  if (resp.status === 401) {
+    ({ resp, data } = await requestVerify(true));
+  }
+
   if (!resp.ok) {
-    throw new Error(data.error || 'Acesso administrativo negado.');
+    throw new Error(
+      (typeof data.error === 'string' && data.error) || 'Acesso administrativo negado.'
+    );
   }
   return data as { authorized: boolean; email: string; uid: string; role: string };
 }

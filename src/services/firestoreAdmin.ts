@@ -28,7 +28,12 @@ import type {
   ServiceItem,
 } from '../types/barber';
 import { DEFAULT_BUSINESS_HOURS, DEFAULT_SETTINGS, INITIAL_DEMO_SERVICES } from '../utils/defaults';
-import { minutesToTimeStr, normalizePhone, timeStrToMinutes } from '../utils/timezone';
+import {
+  isValidCalendarDateStr,
+  minutesToTimeStr,
+  normalizePhone,
+  timeStrToMinutes,
+} from '../utils/timezone';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 function makeId(prefix: string): string {
@@ -395,12 +400,30 @@ export async function createOrUpdateManualAppointment(params: {
   const { id, service, date, startTime, customerName, customerPhone, status, notes, oldDate } =
     params;
 
+  if (!isValidCalendarDateStr(date)) {
+    throw new Error('Data do agendamento inválida.');
+  }
+  if (!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(startTime)) {
+    throw new Error('Horário inicial inválido.');
+  }
+
   const aptId = id || makeId('apt');
   const startMinutes = timeStrToMinutes(startTime);
   const endMinutes = startMinutes + service.durationMinutes;
-  const endTime = minutesToTimeStr(endMinutes);
+  if (endMinutes <= startMinutes || endMinutes > 1440) {
+    throw new Error('O serviço ultrapassa o limite do mesmo dia (24:00). Escolha um horário mais cedo.');
+  }
+  const endTime = endMinutes === 1440 ? '23:59' : minutesToTimeStr(endMinutes);
   const normalizedPhone = normalizePhone(customerPhone);
+  if (!/^[0-9]{10,15}$/.test(normalizedPhone)) {
+    throw new Error('Telefone/WhatsApp inválido. Informe DDD + número.');
+  }
+  if (customerName.trim().length < 2) {
+    throw new Error('Nome do cliente deve ter pelo menos 2 caracteres.');
+  }
   const confirmationCode = `BA-${aptId.slice(-5).toUpperCase()}`;
+
+  const isVisitStatus = (s: AppointmentStatus) => s !== 'cancelled' && s !== 'no_show';
 
   try {
     await runTransaction(db, async (tx) => {
@@ -503,18 +526,23 @@ export async function createOrUpdateManualAppointment(params: {
           normalizedPhone,
           firstVisitAt: date,
           lastVisitAt: date,
-          totalVisits: status === 'cancelled' ? 0 : 1,
+          totalVisits: isVisitStatus(status) ? 1 : 0,
           notes: '',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       } else {
         const cust = customerSnap.data() as Customer;
+        const prevCounts = id && aptSnap?.exists()
+          ? isVisitStatus((aptSnap.data() as Appointment).status)
+          : false;
+        const nextCounts = isVisitStatus(status);
+        const delta = (nextCounts ? 1 : 0) - (prevCounts ? 1 : 0);
         tx.update(customerRef, {
           name: customerName.trim().slice(0, 120),
           phone: customerPhone.trim().slice(0, 32),
           lastVisitAt: date,
-          totalVisits: id ? cust.totalVisits : cust.totalVisits + (status === 'cancelled' ? 0 : 1),
+          totalVisits: Math.max(0, (cust.totalVisits || 0) + delta),
           updatedAt: serverTimestamp(),
         });
       }
@@ -532,22 +560,36 @@ export async function updateAppointmentStatus(
   appointment: Appointment,
   newStatus: AppointmentStatus
 ): Promise<void> {
+  const isVisitStatus = (s: AppointmentStatus) => s !== 'cancelled' && s !== 'no_show';
   try {
     await runTransaction(db, async (tx) => {
       const aptRef = doc(db, 'appointments', appointment.id);
-      const dayRef = doc(db, 'daySchedules', appointment.date);
-      const daySnap = await tx.get(dayRef);
+      const aptSnap = await tx.get(aptRef);
+      if (!aptSnap.exists()) {
+        throw new Error('Agendamento não encontrado.');
+      }
+      const liveApt = aptSnap.data() as Appointment;
+      const dayRef = doc(db, 'daySchedules', liveApt.date);
+      const custRef = /^[0-9]{10,15}$/.test(liveApt.normalizedPhone || '')
+        ? doc(db, 'customers', liveApt.normalizedPhone)
+        : null;
+
+      const [daySnap, custSnap] = await Promise.all([
+        tx.get(dayRef),
+        custRef ? tx.get(custRef) : Promise.resolve(null),
+      ]);
+
       const dayData = daySnap.exists()
         ? (daySnap.data() as DaySchedule)
-        : { date: appointment.date, bookings: {} };
+        : { date: liveApt.date, bookings: {} };
 
       tx.set(dayRef, {
-        date: appointment.date,
+        date: liveApt.date,
         bookings: {
           ...(dayData.bookings || {}),
           [appointment.id]: {
-            startMinutes: appointment.startMinutes,
-            endMinutes: appointment.endMinutes,
+            startMinutes: liveApt.startMinutes,
+            endMinutes: liveApt.endMinutes,
             status: newStatus,
           },
         },
@@ -558,6 +600,19 @@ export async function updateAppointmentStatus(
         status: newStatus,
         updatedAt: serverTimestamp(),
       });
+
+      if (custRef && custSnap?.exists()) {
+        const prevCounts = isVisitStatus(liveApt.status);
+        const nextCounts = isVisitStatus(newStatus);
+        const delta = (nextCounts ? 1 : 0) - (prevCounts ? 1 : 0);
+        if (delta !== 0) {
+          const cust = custSnap.data() as Customer;
+          tx.update(custRef, {
+            totalVisits: Math.max(0, (cust.totalVisits || 0) + delta),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `appointments/${appointment.id}`);

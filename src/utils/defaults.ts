@@ -1,4 +1,4 @@
-import type { BarbershopSettings, BusinessHoursDay, ServiceItem } from '../types/barber';
+import type { BarbershopSettings, BusinessHoursDay, ServiceItem } from '../types/barber.ts';
 
 export const DEFAULT_SETTINGS: BarbershopSettings = {
   shopName: 'Barber Agenda',

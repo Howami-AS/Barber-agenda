@@ -20,6 +20,7 @@ interface AuthContextValue {
   loginWithEmail: (email: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
+  retryAdminCheck: () => Promise<void>;
   clearAuthError: () => void;
 }
 
@@ -32,8 +33,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  const verifyUserAdmin = async (firebaseUser: User, isStale?: () => boolean) => {
+    if (!firebaseUser.emailVerified) {
+      if (isStale?.()) return;
+      setIsAuthorizedAdmin(false);
+      setAdminRole(null);
+      setAuthError(
+        'O e-mail desta conta ainda não foi verificado no Firebase Authentication. Verifique sua caixa de entrada ou utilize "Entrar com Google".'
+      );
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const result = await verifyAdminOnServer(firebaseUser);
+      if (isStale?.()) return;
+      setIsAuthorizedAdmin(Boolean(result.authorized));
+      setAdminRole(result.role);
+      setAuthError(
+        result.authorized ? null : 'Esta conta não está na lista de administradores autorizados.'
+      );
+    } catch (err) {
+      if (isStale?.()) return;
+      setIsAuthorizedAdmin(false);
+      setAdminRole(null);
+      setAuthError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Esta conta não possui autorização administrativa.'
+      );
+    } finally {
+      if (!isStale?.()) {
+        setLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
+    let checkSeq = 0;
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      const mySeq = ++checkSeq;
+      const isStale = () => mySeq !== checkSeq;
+
       setUser(firebaseUser);
       if (!firebaseUser) {
         setIsAuthorizedAdmin(false);
@@ -42,36 +83,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      if (!firebaseUser.emailVerified) {
-        setIsAuthorizedAdmin(false);
-        setAdminRole(null);
-        setAuthError(
-          'O e-mail desta conta ainda não foi verificado no Firebase Authentication. Verifique sua caixa de entrada ou utilize "Entrar com Google".'
-        );
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const result = await verifyAdminOnServer();
-        setIsAuthorizedAdmin(result.authorized);
-        setAdminRole(result.role);
-        setAuthError(null);
-      } catch (err) {
-        setIsAuthorizedAdmin(false);
-        setAdminRole(null);
-        setAuthError(
-          err instanceof Error
-            ? err.message
-            : 'Esta conta não possui autorização administrativa.'
-        );
-      } finally {
-        setLoading(false);
-      }
+      setLoading(true);
+      setAuthError(null);
+      await verifyUserAdmin(firebaseUser, isStale);
     });
 
-    return () => unsub();
+    return () => {
+      checkSeq += 1;
+      unsub();
+    };
   }, []);
+
+  const retryAdminCheck = async () => {
+    if (!auth.currentUser) return;
+    setLoading(true);
+    setAuthError(null);
+    await verifyUserAdmin(auth.currentUser);
+  };
 
   const loginWithGoogle = async () => {
     setAuthError(null);
@@ -125,6 +153,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithEmail,
         resetPassword,
         logout,
+        retryAdminCheck,
         clearAuthError: () => setAuthError(null),
       }}
     >
